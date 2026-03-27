@@ -1,0 +1,24 @@
+<?php
+
+use Illuminate\Foundation\Application;
+use Illuminate\Foundation\Configuration\Exceptions;
+use Illuminate\Foundation\Configuration\Middleware;
+
+return Application::configure(basePath: dirname(__DIR__))
+    ->withRouting(
+        web: __DIR__.'/../routes/web.php',
+        api: __DIR__.'/../routes/api.php',
+        commands: __DIR__.'/../routes/console.php',
+        health: '/up',
+    )
+    ->withMiddleware(function (Middleware $middleware): void {
+        $middleware->alias([
+            'premium' => \App\Http\Middleware\EnsureUserIsPremium::class,
+            'payment.admin' => \App\Http\Middleware\EnsurePaymentAdmin::class,
+            'free.account.limit' => \App\Http\Middleware\EnsureAccountLimitForFreeUser::class,
+            'free.trade.limit' => \App\Http\Middleware\EnsureTradeLimitForFreeUser::class,
+        ]);
+    })
+    ->withExceptions(function (Exceptions $exceptions): void {
+        //
+    })->create();
