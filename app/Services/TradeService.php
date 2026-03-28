@@ -4,6 +4,8 @@ namespace App\Services;
 
 class TradeService
 {
+    protected float $epsilon = 0.00000001;
+
     public function calculateProfitLoss(
         float $entryPrice,
         ?float $exitPrice,
@@ -45,16 +47,16 @@ class TradeService
     ): string {
         $closedQuantity = $this->normalizeClosedQuantity($quantity, $closedQuantity);
 
-        if ($closedQuantity <= 0 && empty($exitDate)) {
+        if ($closedQuantity <= $this->epsilon && empty($exitDate)) {
             return 'open';
         }
 
-        if ($closedQuantity > 0 && $closedQuantity < $quantity) {
-            return 'partial';
+        if ($quantity > 0 && $closedQuantity >= ($quantity - $this->epsilon)) {
+            return 'closed';
         }
 
-        if ($closedQuantity >= $quantity) {
-            return 'closed';
+        if ($closedQuantity > $this->epsilon && $closedQuantity < ($quantity - $this->epsilon)) {
+            return 'partial';
         }
 
         if (! empty($exitDate)) {
@@ -70,7 +72,7 @@ class TradeService
             return 0.0;
         }
 
-        if ($closedQuantity > $quantity) {
+        if ($closedQuantity > $quantity || abs($closedQuantity - $quantity) < $this->epsilon) {
             return round($quantity, 8);
         }
 
@@ -82,7 +84,7 @@ class TradeService
         $normalizedClosed = $this->normalizeClosedQuantity($quantity, $closedQuantity);
         $remaining = $quantity - $normalizedClosed;
 
-        if (abs($remaining) < 0.00000001) {
+        if (abs($remaining) < $this->epsilon) {
             return 0.0;
         }
 
@@ -121,11 +123,6 @@ class TradeService
 
         $closedQuantity = $this->normalizeClosedQuantity($quantity, $closedQuantity);
 
-        /*
-        |--------------------------------------------------------------------------
-        | INVESTMENT
-        |--------------------------------------------------------------------------
-        */
         if ($positionType === 'investment') {
             $data['closed_quantity'] = 0;
             $data['profit_loss'] = null;
@@ -137,14 +134,6 @@ class TradeService
             return $data;
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | NON-INVESTMENT
-        |--------------------------------------------------------------------------
-        | - create trade normal => open, no exit
-        | - edit trade biasa => boleh hitung kalau ada exit
-        | - partial/full close utama dihandle controller
-        */
         $pnlQuantity = $closedQuantity > 0 ? $closedQuantity : $quantity;
 
         $profitLoss = $this->calculateProfitLoss(

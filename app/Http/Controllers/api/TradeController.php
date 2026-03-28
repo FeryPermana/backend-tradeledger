@@ -19,6 +19,8 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 class TradeController extends Controller
 {
+    protected float $epsilon = 0.00000001;
+
     public function __construct(
         protected TradeService $tradeService,
         protected ApiResponseService $apiResponse,
@@ -113,7 +115,6 @@ class TradeController extends Controller
         |--------------------------------------------------------------------------
         | CREATE TRADE MUST ALWAYS BE CLEAN
         |--------------------------------------------------------------------------
-        | Tidak boleh create sambil partial close.
         */
         $data['closed_quantity'] = 0;
         $data['exit_price'] = null;
@@ -209,7 +210,6 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 | CLOSED TRADE SAFE EDIT
                 |--------------------------------------------------------------------------
-                | Closed trade tidak boleh ubah quantity dan closed_quantity
                 */
                 if ($trade->status === 'closed') {
                     unset($input['quantity'], $input['closed_quantity']);
@@ -239,17 +239,17 @@ class TradeController extends Controller
                 */
                 $incrementClose = isset($input['closed_quantity']) && $input['closed_quantity'] !== ''
                     ? (float) $input['closed_quantity']
-                    : 0;
+                    : 0.0;
 
                 $oldClosedQuantity = (float) ($trade->closed_quantity ?? 0);
                 $totalQuantity = (float) $trade->quantity;
 
-                if ($trade->closed_quantity >= $trade->quantity) {
+                if ($oldClosedQuantity >= ($totalQuantity - $this->epsilon)) {
                     throw new \RuntimeException('Trade sudah fully closed.');
                 }
 
                 if ($incrementClose < 0) {
-                    $incrementClose = 0;
+                    $incrementClose = 0.0;
                 }
 
                 $newClosedQuantity = $this->tradeService->normalizeClosedQuantity(
@@ -258,13 +258,13 @@ class TradeController extends Controller
                 );
 
                 $actualIncrement = $newClosedQuantity - $oldClosedQuantity;
-                $isFullyClosed = abs($newClosedQuantity - $totalQuantity) < 0.00000001;
+                $isFullyClosed = $newClosedQuantity >= ($totalQuantity - $this->epsilon);
 
-                if ($incrementClose > 0 && $actualIncrement <= 0) {
+                if ($incrementClose > 0 && $actualIncrement <= $this->epsilon) {
                     throw new \RuntimeException('Tidak ada quantity tersisa untuk partial close.');
                 }
 
-                if ($actualIncrement > 0) {
+                if ($actualIncrement > $this->epsilon) {
                     if (empty($input['exit_price'])) {
                         throw new \RuntimeException('Exit price wajib diisi untuk partial close.');
                     }
@@ -276,20 +276,11 @@ class TradeController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | NORMAL UPDATE TANPA PARTIAL CLOSE
+                | NORMAL UPDATE TANPA CLOSE ACTION
                 |--------------------------------------------------------------------------
                 */
-                if ($actualIncrement <= 0) {
+                if ($actualIncrement <= $this->epsilon) {
                     unset($input['quantity'], $input['closed_quantity']);
-
-                    /*
-                    |--------------------------------------------------------------------------
-                    | NO CLOSE ACTION
-                    |--------------------------------------------------------------------------
-                    | If user is only managing the trade without closing any quantity,
-                    | exit-related fields must not affect the trade state or PnL.
-                    |--------------------------------------------------------------------------
-                    */
                     unset($input['exit_price'], $input['exit_date']);
 
                     $merged = array_merge($trade->toArray(), $input);
@@ -304,7 +295,6 @@ class TradeController extends Controller
                     $prepared['r_multiple'] = $trade->r_multiple;
 
                     $trade->update($prepared);
-
                     $trade->tags()->sync($tagIds);
 
                     $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
@@ -312,11 +302,11 @@ class TradeController extends Controller
 
                     return;
                 }
+
                 /*
                 |--------------------------------------------------------------------------
                 | FULL CLOSE
                 |--------------------------------------------------------------------------
-                | Parent trade langsung jadi closed final
                 */
                 if ($isFullyClosed) {
                     $exitPrice = (float) $input['exit_price'];
@@ -364,13 +354,18 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 | PARTIAL CLOSE
                 |--------------------------------------------------------------------------
-                | Parent trade jadi partial
-                | Lalu histori partial dibuat sebagai trade baru (closed)
-                |--------------------------------------------------------------------------
                 */
                 $trade->update([
                     'closed_quantity' => $newClosedQuantity,
                     'status' => 'partial',
+                    'exit_price' => $trade->exit_price,
+                    'exit_date' => $trade->exit_date,
+                    'profit_loss' => $trade->profit_loss,
+                    'r_multiple' => $trade->r_multiple,
+                    'notes' => $input['notes'] ?? $trade->notes,
+                    'stop_loss' => $input['stop_loss'] ?? $trade->stop_loss,
+                    'take_profit' => $input['take_profit'] ?? $trade->take_profit,
+                    'fees' => $input['fees'] ?? $trade->fees,
                 ]);
 
                 $trade->tags()->sync($tagIds);
