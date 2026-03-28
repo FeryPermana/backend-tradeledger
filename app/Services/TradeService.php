@@ -43,6 +43,8 @@ class TradeService
         float $closedQuantity,
         ?string $exitDate
     ): string {
+        $closedQuantity = $this->normalizeClosedQuantity($quantity, $closedQuantity);
+
         if ($closedQuantity <= 0 && empty($exitDate)) {
             return 'open';
         }
@@ -65,38 +67,51 @@ class TradeService
     public function normalizeClosedQuantity(float $quantity, float $closedQuantity): float
     {
         if ($closedQuantity < 0) {
-            return 0;
+            return 0.0;
         }
 
         if ($closedQuantity > $quantity) {
-            return $quantity;
+            return round($quantity, 8);
         }
 
-        return $closedQuantity;
+        return round($closedQuantity, 8);
     }
 
     public function getRemainingQuantity(float $quantity, float $closedQuantity): float
     {
-        return max(0, $quantity - $this->normalizeClosedQuantity($quantity, $closedQuantity));
+        $normalizedClosed = $this->normalizeClosedQuantity($quantity, $closedQuantity);
+        $remaining = $quantity - $normalizedClosed;
+
+        if (abs($remaining) < 0.00000001) {
+            return 0.0;
+        }
+
+        return round(max(0, $remaining), 8);
     }
 
     public function prepareTradeData(array $data): array
     {
         $positionType = $data['position_type'] ?? null;
 
-        $entryPrice = (float) ($data['entry_price'] ?? 0);
+        $entryPrice = isset($data['entry_price']) && $data['entry_price'] !== ''
+            ? (float) $data['entry_price']
+            : 0.0;
+
         $exitPrice = isset($data['exit_price']) && $data['exit_price'] !== ''
             ? (float) $data['exit_price']
             : null;
 
-        $quantity = (float) ($data['quantity'] ?? 0);
+        $quantity = isset($data['quantity']) && $data['quantity'] !== ''
+            ? (float) $data['quantity']
+            : 0.0;
+
         $closedQuantity = isset($data['closed_quantity']) && $data['closed_quantity'] !== ''
             ? (float) $data['closed_quantity']
-            : 0;
+            : 0.0;
 
         $fees = isset($data['fees']) && $data['fees'] !== ''
             ? (float) $data['fees']
-            : 0;
+            : 0.0;
 
         $stopLoss = isset($data['stop_loss']) && $data['stop_loss'] !== ''
             ? (float) $data['stop_loss']
@@ -111,13 +126,15 @@ class TradeService
         | INVESTMENT
         |--------------------------------------------------------------------------
         | Investment tidak pakai exit dari trade form.
-        | close / partial close ditangani dari portfolio.
+        | Close / partial close ditangani dari portfolio.
         */
         if ($positionType === 'investment') {
             $data['closed_quantity'] = 0;
             $data['profit_loss'] = null;
             $data['r_multiple'] = null;
             $data['status'] = 'open';
+            $data['exit_price'] = null;
+            $data['exit_date'] = null;
 
             return $data;
         }
@@ -126,9 +143,11 @@ class TradeService
         |--------------------------------------------------------------------------
         | NON-INVESTMENT
         |--------------------------------------------------------------------------
-        | profit_loss dan r_multiple di trade utama hanya meaningful
-        | kalau ada exit_price. Untuk partial close, quantity pnl memakai
-        | closed_quantity total yang tersimpan saat ini.
+        | Rule aman:
+        | - kalau belum ada exit_price => profit_loss & r_multiple null
+        | - kalau ada exit_price:
+        |   * pakai closed_quantity kalau > 0
+        |   * kalau belum ada closed_quantity, anggap full quantity
         */
         $pnlQuantity = $closedQuantity > 0 ? $closedQuantity : $quantity;
 

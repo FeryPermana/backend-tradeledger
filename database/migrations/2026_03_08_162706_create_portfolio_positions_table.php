@@ -24,8 +24,6 @@ return new class extends Migration
             $table->string('conviction_level')->nullable();
             $table->text('thesis')->nullable();
             $table->text('notes')->nullable();
-
-            $table->unique(['user_id', 'asset_id']);
             $table->index('conviction_level');
             $table->timestamps();
         });

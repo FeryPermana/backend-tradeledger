@@ -30,6 +30,15 @@ class Trade extends Model
     protected $casts = [
         'entry_date' => 'datetime',
         'exit_date' => 'datetime',
+        'entry_price' => 'decimal:8',
+        'exit_price' => 'decimal:8',
+        'quantity' => 'decimal:8',
+        'closed_quantity' => 'decimal:8',
+        'stop_loss' => 'decimal:8',
+        'take_profit' => 'decimal:8',
+        'fees' => 'decimal:2',
+        'profit_loss' => 'decimal:2',
+        'r_multiple' => 'decimal:2',
     ];
 
     protected $appends = [

@@ -45,9 +45,9 @@ class TradeController extends Controller
         }
 
         if ($request->filled('position_type')) {
-            if($request->string('position_type') == 'no_investment') {
+            if ($request->string('position_type') == 'no_investment') {
                 $query->where('position_type', '!=', 'investment');
-            } else{
+            } else {
                 $query->where('position_type', $request->string('position_type'));
             }
         }
@@ -146,9 +146,8 @@ class TradeController extends Controller
 
         $input = $request->validated();
 
-        $accountId = $trade->account_id;
         $account = Account::query()
-            ->where('id', $accountId)
+            ->where('id', $trade->account_id)
             ->where('user_id', $request->user()->id)
             ->firstOrFail();
 
@@ -173,13 +172,13 @@ class TradeController extends Controller
             DB::transaction(function () use ($request, $trade, $input) {
                 $oldTrade = $trade->replicate();
                 $oldTrade->id = $trade->id;
+
                 $tagIds = $request->validated('tag_ids', []);
 
                 /*
                 |--------------------------------------------------------------------------
                 | INVESTMENT
                 |--------------------------------------------------------------------------
-                | Investment tetap tidak memakai partial close dari trade form.
                 */
                 if ($trade->position_type === 'investment') {
                     unset($input['quantity']);
@@ -200,8 +199,6 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 | CLOSED TRADE SAFE EDIT
                 |--------------------------------------------------------------------------
-                | Trade yang sudah closed tetap boleh diedit,
-                | tapi tidak boleh partial close lagi / bikin generated trade baru.
                 */
                 if ($trade->status === 'closed') {
                     unset($input['quantity']);
@@ -224,29 +221,29 @@ class TradeController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | NON-INVESTMENT
+                | PARTIAL / FULL CLOSE FLOW
                 |--------------------------------------------------------------------------
-                | Field closed_quantity dari FE dianggap sebagai:
-                | "qty tambahan yang ditutup sekarang"
-                | bukan total final closed quantity.
+                | FE closed_quantity = qty tambahan yang ditutup sekarang
+                |--------------------------------------------------------------------------
                 */
                 $incrementClose = isset($input['closed_quantity']) && $input['closed_quantity'] !== ''
                     ? (float) $input['closed_quantity']
                     : 0;
 
                 $oldClosedQuantity = (float) ($trade->closed_quantity ?? 0);
-                $quantity = (float) $trade->quantity;
+                $totalQuantity = (float) $trade->quantity;
 
                 if ($incrementClose < 0) {
                     $incrementClose = 0;
                 }
 
                 $newClosedQuantity = $this->tradeService->normalizeClosedQuantity(
-                    $quantity,
+                    $totalQuantity,
                     $oldClosedQuantity + $incrementClose
                 );
 
                 $actualIncrement = $newClosedQuantity - $oldClosedQuantity;
+                $isFullyClosed = abs($newClosedQuantity - $totalQuantity) < 0.00000001;
 
                 if ($incrementClose > 0 && $actualIncrement <= 0) {
                     throw new \RuntimeException('Tidak ada quantity tersisa untuk partial close.');
@@ -264,83 +261,136 @@ class TradeController extends Controller
 
                 /*
                 |--------------------------------------------------------------------------
-                | UPDATE PARENT TRADE
+                | NORMAL UPDATE TANPA PARTIAL CLOSE
                 |--------------------------------------------------------------------------
-                | Parent trade = summary posisi
-                | Jangan simpan pnl/exit di parent, biar tidak double merah/hijau.
                 */
-                unset($input['quantity']);
-                $input['closed_quantity'] = $newClosedQuantity;
+                if ($actualIncrement <= 0) {
+                    unset($input['quantity']);
+                    unset($input['closed_quantity']);
 
-                $merged = array_merge($trade->toArray(), $input);
-                $preparedMainTrade = $this->tradeService->prepareTradeData($merged);
+                    $merged = array_merge($trade->toArray(), $input);
+                    $prepared = $this->tradeService->prepareTradeData($merged);
 
-                // parent trade hanya jadi wadah / summary
-                $preparedMainTrade['exit_price'] = null;
-                $preparedMainTrade['profit_loss'] = null;
-                $preparedMainTrade['r_multiple'] = null;
+                    $prepared['closed_quantity'] = $trade->closed_quantity;
+                    $prepared['status'] = $trade->status;
 
-                // kalau full close, parent tetap closed dan boleh simpan exit_date
-                if ($newClosedQuantity >= $quantity && !empty($input['exit_date'])) {
-                    $preparedMainTrade['exit_date'] = $input['exit_date'];
-                    $preparedMainTrade['status'] = 'closed';
+                    $trade->update($prepared);
+                    $trade->tags()->sync($tagIds);
+
+                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
+                    $this->tradePortfolioSyncService->syncFromTrade($trade);
+
+                    return;
                 }
-
-                $trade->update($preparedMainTrade);
-                $trade->tags()->sync($tagIds);
 
                 /*
                 |--------------------------------------------------------------------------
-                | GENERATED EXIT TRADE
+                | FULL CLOSE
                 |--------------------------------------------------------------------------
-                | Saat partial close, buat trade baru sebagai histori exit.
-                | PnL dan R dihitung langsung di sini biar tidak null.
+                | Kalau qty tertutup habis, update parent trade langsung final.
+                | JANGAN bikin generated trade baru.
+                |--------------------------------------------------------------------------
                 */
-                if ($actualIncrement > 0) {
-                    $generatedEntryPrice = (float) $trade->entry_price;
-                    $generatedExitPrice = (float) $input['exit_price'];
-                    $generatedFees = (float) ($input['fees'] ?? 0);
-                    $generatedStopLoss = isset($input['stop_loss']) && $input['stop_loss'] !== ''
+                if ($isFullyClosed) {
+                    $exitPrice = (float) $input['exit_price'];
+                    $finalFees = (float) ($input['fees'] ?? $trade->fees ?? 0);
+                    $finalStopLoss = isset($input['stop_loss']) && $input['stop_loss'] !== ''
                         ? (float) $input['stop_loss']
                         : (isset($trade->stop_loss) ? (float) $trade->stop_loss : null);
 
-                    $generatedProfitLoss = $this->tradeService->calculateProfitLoss(
-                        $generatedEntryPrice,
-                        $generatedExitPrice,
+                    $finalProfitLoss = $this->tradeService->calculateProfitLoss(
+                        (float) $trade->entry_price,
+                        $exitPrice,
                         $actualIncrement,
-                        $generatedFees
+                        $finalFees
                     );
 
-                    $generatedRMultiple = $this->tradeService->calculateRMultiple(
-                        $generatedEntryPrice,
-                        $generatedStopLoss,
+                    $finalRMultiple = $this->tradeService->calculateRMultiple(
+                        (float) $trade->entry_price,
+                        $finalStopLoss,
                         $actualIncrement,
-                        $generatedProfitLoss
+                        $finalProfitLoss
                     );
 
-                    $generatedTrade = Trade::create([
-                        'user_id' => $trade->user_id,
-                        'account_id' => $trade->account_id,
-                        'asset_id' => $trade->asset_id,
-                        'strategy_id' => $trade->strategy_id,
-                        'position_type' => $trade->position_type,
-                        'entry_price' => $generatedEntryPrice,
-                        'exit_price' => $generatedExitPrice,
-                        'quantity' => $actualIncrement,
-                        'closed_quantity' => $actualIncrement,
-                        'stop_loss' => $generatedStopLoss,
+                    $trade->update([
+                        'exit_price' => $exitPrice,
+                        'closed_quantity' => $newClosedQuantity,
+                        'stop_loss' => $finalStopLoss,
                         'take_profit' => $input['take_profit'] ?? $trade->take_profit,
-                        'fees' => $generatedFees,
-                        'profit_loss' => $generatedProfitLoss,
-                        'r_multiple' => $generatedRMultiple,
-                        'entry_date' => $trade->entry_date,
+                        'fees' => $finalFees,
+                        'profit_loss' => $finalProfitLoss,
+                        'r_multiple' => $finalRMultiple,
                         'exit_date' => $input['exit_date'],
                         'status' => 'closed',
-                        'notes' => $this->buildGeneratedCloseNote($trade->notes, $actualIncrement),
+                        'notes' => $input['notes'] ?? $trade->notes,
                     ]);
 
-                    $generatedTrade->tags()->sync($tagIds);
+                    $trade->tags()->sync($tagIds);
+
+                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
+                    $this->tradePortfolioSyncService->syncFromTrade($trade);
+
+                    return;
                 }
+
+                /*
+                |--------------------------------------------------------------------------
+                | PARTIAL CLOSE
+                |--------------------------------------------------------------------------
+                | Parent trade hanya update closed_quantity.
+                | Histori partial disimpan sebagai generated trade closed.
+                |--------------------------------------------------------------------------
+                */
+                $trade->update([
+                    'closed_quantity' => $newClosedQuantity,
+                    'status' => 'open',
+                ]);
+
+                $trade->tags()->sync($tagIds);
+
+                $generatedEntryPrice = (float) $trade->entry_price;
+                $generatedExitPrice = (float) $input['exit_price'];
+                $generatedFees = (float) ($input['fees'] ?? 0);
+                $generatedStopLoss = isset($input['stop_loss']) && $input['stop_loss'] !== ''
+                    ? (float) $input['stop_loss']
+                    : (isset($trade->stop_loss) ? (float) $trade->stop_loss : null);
+
+                $generatedProfitLoss = $this->tradeService->calculateProfitLoss(
+                    $generatedEntryPrice,
+                    $generatedExitPrice,
+                    $actualIncrement,
+                    $generatedFees
+                );
+
+                $generatedRMultiple = $this->tradeService->calculateRMultiple(
+                    $generatedEntryPrice,
+                    $generatedStopLoss,
+                    $actualIncrement,
+                    $generatedProfitLoss
+                );
+
+                $generatedTrade = Trade::create([
+                    'user_id' => $trade->user_id,
+                    'account_id' => $trade->account_id,
+                    'asset_id' => $trade->asset_id,
+                    'strategy_id' => $trade->strategy_id,
+                    'position_type' => $trade->position_type,
+                    'entry_price' => $generatedEntryPrice,
+                    'exit_price' => $generatedExitPrice,
+                    'quantity' => $actualIncrement,
+                    'closed_quantity' => $actualIncrement,
+                    'stop_loss' => $generatedStopLoss,
+                    'take_profit' => $input['take_profit'] ?? $trade->take_profit,
+                    'fees' => $generatedFees,
+                    'profit_loss' => $generatedProfitLoss,
+                    'r_multiple' => $generatedRMultiple,
+                    'entry_date' => $trade->entry_date,
+                    'exit_date' => $input['exit_date'],
+                    'status' => 'closed',
+                    'notes' => $this->buildGeneratedCloseNote($trade->notes, $actualIncrement),
+                ]);
+
+                $generatedTrade->tags()->sync($tagIds);
 
                 $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
                 $this->tradePortfolioSyncService->syncFromTrade($trade);
