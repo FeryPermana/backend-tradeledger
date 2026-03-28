@@ -111,11 +111,6 @@ class TradeController extends Controller
             );
         }
 
-        /*
-        |--------------------------------------------------------------------------
-        | CREATE TRADE MUST ALWAYS BE CLEAN
-        |--------------------------------------------------------------------------
-        */
         $data['closed_quantity'] = 0;
         $data['exit_price'] = null;
         $data['exit_date'] = null;
@@ -186,11 +181,6 @@ class TradeController extends Controller
 
                 $tagIds = $request->validated('tag_ids', []);
 
-                /*
-                |--------------------------------------------------------------------------
-                | INVESTMENT
-                |--------------------------------------------------------------------------
-                */
                 if ($trade->position_type === 'investment') {
                     unset($input['quantity'], $input['closed_quantity']);
 
@@ -206,11 +196,6 @@ class TradeController extends Controller
                     return;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | CLOSED TRADE SAFE EDIT
-                |--------------------------------------------------------------------------
-                */
                 if ($trade->status === 'closed') {
                     unset($input['quantity'], $input['closed_quantity']);
 
@@ -220,6 +205,10 @@ class TradeController extends Controller
                     $prepared['status'] = 'closed';
                     $prepared['closed_quantity'] = $trade->closed_quantity;
                     $prepared['quantity'] = $trade->quantity;
+                    $prepared['exit_price'] = $trade->exit_price;
+                    $prepared['exit_date'] = $trade->exit_date;
+                    $prepared['profit_loss'] = $trade->profit_loss;
+                    $prepared['r_multiple'] = $trade->r_multiple;
 
                     $trade->update($prepared);
                     $trade->tags()->sync($tagIds);
@@ -230,13 +219,6 @@ class TradeController extends Controller
                     return;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | PARTIAL / FULL CLOSE FLOW
-                |--------------------------------------------------------------------------
-                | FE closed_quantity = qty tambahan yang ditutup sekarang
-                |--------------------------------------------------------------------------
-                */
                 $incrementClose = isset($input['closed_quantity']) && $input['closed_quantity'] !== ''
                     ? (float) $input['closed_quantity']
                     : 0.0;
@@ -244,7 +226,7 @@ class TradeController extends Controller
                 $oldClosedQuantity = (float) ($trade->closed_quantity ?? 0);
                 $totalQuantity = (float) $trade->quantity;
 
-                if ($oldClosedQuantity >= ($totalQuantity - $this->epsilon)) {
+                if ($this->isEffectivelyClosed($oldClosedQuantity, $totalQuantity)) {
                     throw new \RuntimeException('Trade sudah fully closed.');
                 }
 
@@ -257,14 +239,19 @@ class TradeController extends Controller
                     $oldClosedQuantity + $incrementClose
                 );
 
-                $actualIncrement = $newClosedQuantity - $oldClosedQuantity;
-                $isFullyClosed = $newClosedQuantity >= ($totalQuantity - $this->epsilon);
+                $actualIncrement = round($newClosedQuantity - $oldClosedQuantity, 8);
 
-                if ($incrementClose > 0 && $actualIncrement <= $this->epsilon) {
+                if ($this->isEffectivelyZero($actualIncrement)) {
+                    $actualIncrement = 0.0;
+                }
+
+                $isFullyClosed = $this->isEffectivelyClosed($newClosedQuantity, $totalQuantity);
+
+                if ($incrementClose > 0 && $actualIncrement <= 0) {
                     throw new \RuntimeException('Tidak ada quantity tersisa untuk partial close.');
                 }
 
-                if ($actualIncrement > $this->epsilon) {
+                if ($actualIncrement > 0) {
                     if (empty($input['exit_price'])) {
                         throw new \RuntimeException('Exit price wajib diisi untuk partial close.');
                     }
@@ -274,12 +261,7 @@ class TradeController extends Controller
                     }
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | NORMAL UPDATE TANPA CLOSE ACTION
-                |--------------------------------------------------------------------------
-                */
-                if ($actualIncrement <= $this->epsilon) {
+                if ($actualIncrement <= 0) {
                     unset($input['quantity'], $input['closed_quantity']);
                     unset($input['exit_price'], $input['exit_date']);
 
@@ -303,11 +285,6 @@ class TradeController extends Controller
                     return;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | FULL CLOSE
-                |--------------------------------------------------------------------------
-                */
                 if ($isFullyClosed) {
                     $exitPrice = (float) $input['exit_price'];
                     $finalFees = (float) ($input['fees'] ?? $trade->fees ?? 0);
@@ -331,7 +308,7 @@ class TradeController extends Controller
 
                     $trade->update([
                         'exit_price' => $exitPrice,
-                        'closed_quantity' => $newClosedQuantity,
+                        'closed_quantity' => $totalQuantity,
                         'stop_loss' => $finalStopLoss,
                         'take_profit' => $input['take_profit'] ?? $trade->take_profit,
                         'fees' => $finalFees,
@@ -350,11 +327,10 @@ class TradeController extends Controller
                     return;
                 }
 
-                /*
-                |--------------------------------------------------------------------------
-                | PARTIAL CLOSE
-                |--------------------------------------------------------------------------
-                */
+                if ($this->isEffectivelyClosed($newClosedQuantity, $totalQuantity)) {
+                    throw new \RuntimeException('Partial generated trade must not be created for full close.');
+                }
+
                 $trade->update([
                     'closed_quantity' => $newClosedQuantity,
                     'status' => 'partial',
@@ -519,5 +495,15 @@ class TradeController extends Controller
         }
 
         return $prefix . ' | ' . $qtyText . ' | ' . $originalNotes;
+    }
+
+    protected function isEffectivelyZero(float $value): bool
+    {
+        return abs($value) < $this->epsilon;
+    }
+
+    protected function isEffectivelyClosed(float $closedQty, float $totalQty): bool
+    {
+        return $totalQty > 0 && $closedQty >= ($totalQty - $this->epsilon);
     }
 }
