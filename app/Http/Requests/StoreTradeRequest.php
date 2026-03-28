@@ -39,13 +39,13 @@ class StoreTradeRequest extends FormRequest
                 'in:scalping,intra_day,swing,investment',
             ],
 
-            'entry_price' => ['required', 'numeric'],
-            'exit_price' => ['nullable', 'numeric'],
-            'quantity' => ['required', 'numeric'],
+            'entry_price' => ['required', 'numeric', 'gt:0'],
+            'exit_price' => ['nullable', 'numeric', 'gt:0'],
+            'quantity' => ['required', 'numeric', 'gt:0'],
 
             'stop_loss' => ['nullable', 'numeric'],
             'take_profit' => ['nullable', 'numeric'],
-            'fees' => ['nullable', 'numeric'],
+            'fees' => ['nullable', 'numeric', 'gte:0'],
 
             'entry_date' => ['required', 'date'],
             'exit_date' => ['nullable', 'date', 'after_or_equal:entry_date'],
@@ -58,6 +58,11 @@ class StoreTradeRequest extends FormRequest
                 Rule::exists('tags', 'id')->where(fn ($q) => $q->where('user_id', $userId)),
             ],
 
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE TRADE MUST NOT CLOSE POSITION
+            |--------------------------------------------------------------------------
+            */
             'closed_quantity' => ['nullable', 'numeric', 'gte:0'],
             'status' => ['nullable', 'in:open,partial,closed'],
         ];
@@ -70,17 +75,37 @@ class StoreTradeRequest extends FormRequest
             $quantity = (float) ($this->input('quantity') ?? 0);
             $closedQuantity = (float) ($this->input('closed_quantity') ?? 0);
 
-            if ($closedQuantity > $quantity) {
+            /*
+            |--------------------------------------------------------------------------
+            | CREATE = OPEN TRADE ONLY
+            |--------------------------------------------------------------------------
+            */
+            if ($closedQuantity > 0) {
                 $validator->errors()->add(
                     'closed_quantity',
-                    'Closed quantity tidak boleh melebihi quantity.'
+                    'Closed quantity is not allowed when opening a trade.'
                 );
             }
 
+            if (
+                ! empty($this->input('exit_price')) ||
+                ! empty($this->input('exit_date'))
+            ) {
+                $validator->errors()->add(
+                    'exit_price',
+                    'Exit fields are not allowed when opening a trade.'
+                );
+            }
+
+            /*
+            |--------------------------------------------------------------------------
+            | INVESTMENT GUARD
+            |--------------------------------------------------------------------------
+            */
             if ($positionType === 'investment' && $closedQuantity > 0) {
                 $validator->errors()->add(
                     'closed_quantity',
-                    'Investment tidak boleh partial close dari trade form.'
+                    'Investment positions cannot be partially closed from the trade form.'
                 );
             }
 
@@ -90,10 +115,15 @@ class StoreTradeRequest extends FormRequest
             ) {
                 $validator->errors()->add(
                     'position_type',
-                    'Investment close harus dilakukan dari portfolio.'
+                    'Investment positions must be closed from the portfolio page.'
                 );
             }
 
+            /*
+            |--------------------------------------------------------------------------
+            | ACCOUNT / EQUITY CHECK
+            |--------------------------------------------------------------------------
+            */
             if (! $this->filled('account_id') || ! $this->filled('entry_price') || ! $this->filled('quantity')) {
                 return;
             }
@@ -116,7 +146,7 @@ class StoreTradeRequest extends FormRequest
             if ($positionValue > $availableEquity) {
                 $validator->errors()->add(
                     'quantity',
-                    'Nilai posisi melebihi equity account.'
+                    'Position value exceeds account equity.'
                 );
             }
         });

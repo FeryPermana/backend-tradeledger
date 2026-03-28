@@ -125,8 +125,6 @@ class TradeService
         |--------------------------------------------------------------------------
         | INVESTMENT
         |--------------------------------------------------------------------------
-        | Investment tidak pakai exit dari trade form.
-        | Close / partial close ditangani dari portfolio.
         */
         if ($positionType === 'investment') {
             $data['closed_quantity'] = 0;
@@ -143,11 +141,9 @@ class TradeService
         |--------------------------------------------------------------------------
         | NON-INVESTMENT
         |--------------------------------------------------------------------------
-        | Rule aman:
-        | - kalau belum ada exit_price => profit_loss & r_multiple null
-        | - kalau ada exit_price:
-        |   * pakai closed_quantity kalau > 0
-        |   * kalau belum ada closed_quantity, anggap full quantity
+        | - create trade normal => open, no exit
+        | - edit trade biasa => boleh hitung kalau ada exit
+        | - partial/full close utama dihandle controller
         */
         $pnlQuantity = $closedQuantity > 0 ? $closedQuantity : $quantity;
 

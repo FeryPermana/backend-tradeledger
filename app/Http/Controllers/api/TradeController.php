@@ -109,6 +109,16 @@ class TradeController extends Controller
             );
         }
 
+        /*
+        |--------------------------------------------------------------------------
+        | CREATE TRADE MUST ALWAYS BE CLEAN
+        |--------------------------------------------------------------------------
+        | Tidak boleh create sambil partial close.
+        */
+        $data['closed_quantity'] = 0;
+        $data['exit_price'] = null;
+        $data['exit_date'] = null;
+
         $data = $this->tradeService->prepareTradeData($data);
 
         $trade = DB::transaction(function () use ($request, $data) {
@@ -181,7 +191,7 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 */
                 if ($trade->position_type === 'investment') {
-                    unset($input['quantity']);
+                    unset($input['quantity'], $input['closed_quantity']);
 
                     $merged = array_merge($trade->toArray(), $input);
                     $prepared = $this->tradeService->prepareTradeData($merged);
@@ -199,16 +209,17 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 | CLOSED TRADE SAFE EDIT
                 |--------------------------------------------------------------------------
+                | Closed trade tidak boleh ubah quantity dan closed_quantity
                 */
                 if ($trade->status === 'closed') {
-                    unset($input['quantity']);
-                    unset($input['closed_quantity']);
+                    unset($input['quantity'], $input['closed_quantity']);
 
                     $merged = array_merge($trade->toArray(), $input);
                     $prepared = $this->tradeService->prepareTradeData($merged);
 
                     $prepared['status'] = 'closed';
                     $prepared['closed_quantity'] = $trade->closed_quantity;
+                    $prepared['quantity'] = $trade->quantity;
 
                     $trade->update($prepared);
                     $trade->tags()->sync($tagIds);
@@ -232,6 +243,10 @@ class TradeController extends Controller
 
                 $oldClosedQuantity = (float) ($trade->closed_quantity ?? 0);
                 $totalQuantity = (float) $trade->quantity;
+
+                if ($trade->closed_quantity >= $trade->quantity) {
+                    throw new \RuntimeException('Trade sudah fully closed.');
+                }
 
                 if ($incrementClose < 0) {
                     $incrementClose = 0;
@@ -265,16 +280,31 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 */
                 if ($actualIncrement <= 0) {
-                    unset($input['quantity']);
-                    unset($input['closed_quantity']);
+                    unset($input['quantity'], $input['closed_quantity']);
+
+                    /*
+                    |--------------------------------------------------------------------------
+                    | NO CLOSE ACTION
+                    |--------------------------------------------------------------------------
+                    | If user is only managing the trade without closing any quantity,
+                    | exit-related fields must not affect the trade state or PnL.
+                    |--------------------------------------------------------------------------
+                    */
+                    unset($input['exit_price'], $input['exit_date']);
 
                     $merged = array_merge($trade->toArray(), $input);
                     $prepared = $this->tradeService->prepareTradeData($merged);
 
                     $prepared['closed_quantity'] = $trade->closed_quantity;
                     $prepared['status'] = $trade->status;
+                    $prepared['quantity'] = $trade->quantity;
+                    $prepared['exit_price'] = $trade->exit_price;
+                    $prepared['exit_date'] = $trade->exit_date;
+                    $prepared['profit_loss'] = $trade->profit_loss;
+                    $prepared['r_multiple'] = $trade->r_multiple;
 
                     $trade->update($prepared);
+
                     $trade->tags()->sync($tagIds);
 
                     $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
@@ -282,14 +312,11 @@ class TradeController extends Controller
 
                     return;
                 }
-
                 /*
                 |--------------------------------------------------------------------------
                 | FULL CLOSE
                 |--------------------------------------------------------------------------
-                | Kalau qty tertutup habis, update parent trade langsung final.
-                | JANGAN bikin generated trade baru.
-                |--------------------------------------------------------------------------
+                | Parent trade langsung jadi closed final
                 */
                 if ($isFullyClosed) {
                     $exitPrice = (float) $input['exit_price'];
@@ -301,14 +328,14 @@ class TradeController extends Controller
                     $finalProfitLoss = $this->tradeService->calculateProfitLoss(
                         (float) $trade->entry_price,
                         $exitPrice,
-                        $actualIncrement,
+                        $totalQuantity,
                         $finalFees
                     );
 
                     $finalRMultiple = $this->tradeService->calculateRMultiple(
                         (float) $trade->entry_price,
                         $finalStopLoss,
-                        $actualIncrement,
+                        $totalQuantity,
                         $finalProfitLoss
                     );
 
@@ -337,13 +364,13 @@ class TradeController extends Controller
                 |--------------------------------------------------------------------------
                 | PARTIAL CLOSE
                 |--------------------------------------------------------------------------
-                | Parent trade hanya update closed_quantity.
-                | Histori partial disimpan sebagai generated trade closed.
+                | Parent trade jadi partial
+                | Lalu histori partial dibuat sebagai trade baru (closed)
                 |--------------------------------------------------------------------------
                 */
                 $trade->update([
                     'closed_quantity' => $newClosedQuantity,
-                    'status' => 'open',
+                    'status' => 'partial',
                 ]);
 
                 $trade->tags()->sync($tagIds);
