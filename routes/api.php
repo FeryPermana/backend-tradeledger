@@ -24,7 +24,6 @@ Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])->name('password.reset');
-    Route::put('/profile', [AuthController::class, 'updateProfile']);
 
     Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])
         ->middleware(['signed'])
@@ -34,6 +33,8 @@ Route::prefix('auth')->group(function () {
         Route::get('/me', [AuthController::class, 'me']);
         Route::post('/logout', [AuthController::class, 'logout']);
         Route::get('/plan-status', [AuthController::class, 'planStatus']);
+        Route::put('/profile', [AuthController::class, 'updateProfile']);
+        Route::put('/password', [AuthController::class, 'updatePassword']);
         Route::post('/email/verification-notification', [AuthController::class, 'resendVerificationEmail'])
             ->middleware('throttle:6,1')
             ->name('verification.send');
