@@ -328,7 +328,7 @@ class TradeController extends Controller
                 }
 
                 if ($this->isEffectivelyClosed($newClosedQuantity, $totalQuantity)) {
-                    throw new \RuntimeException('Partial generated trade must not be created for full close.');
+                    throw new \RuntimeException('Partial generated trade must not be created for full close.....');
                 }
 
                 $trade->update([
