@@ -24,7 +24,7 @@ Route::prefix('auth')->group(function () {
     Route::post('/login', [AuthController::class, 'login']);
     Route::post('/forgot-password', [AuthController::class, 'forgotPassword']);
     Route::post('/reset-password', [AuthController::class, 'resetPassword'])->name('password.reset');
-    Route::post('/profile', [AuthController::class, 'updateProfile']);
+    Route::put('/profile', [AuthController::class, 'updateProfile']);
 
     Route::get('/email/verify/{id}/{hash}', [AuthController::class, 'verifyEmail'])
         ->middleware(['signed'])
