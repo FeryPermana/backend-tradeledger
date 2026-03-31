@@ -6,12 +6,15 @@ use App\Models\Account;
 use App\Models\PortfolioPosition;
 use App\Models\Trade;
 use App\Models\User;
+use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
 
 class AnalyticsService
 {
     public function __construct(
         protected CurrencyConverterService $converter
-    ) {}
+    ) {
+    }
 
     protected function getBaseCurrency(int $userId): string
     {
@@ -34,11 +37,7 @@ class AnalyticsService
 
         $currency = strtoupper(trim((string) $currency));
 
-        if ($currency !== '') {
-            return $currency;
-        }
-
-        return 'IDR';
+        return $currency !== '' ? $currency : 'IDR';
     }
 
     protected function convertTradeProfitLossToBase(Trade $trade, string $baseCurrency): float
@@ -61,28 +60,138 @@ class AnalyticsService
         );
     }
 
-    protected function sumPositiveProfitLoss($items, string $key = 'profit_loss'): float
+    protected function toArrayValue($value): array
     {
-        return (float) $items->sum(function ($item) use ($key) {
-            $value = is_array($item)
-                ? (float) ($item[$key] ?? 0)
-                : (float) ($item->{$key} ?? 0);
+        if (is_array($value)) {
+            return array_values(array_filter($value, fn ($item) => $item !== null && $item !== ''));
+        }
 
-            return $value > 0 ? $value : 0;
+        if ($value === null || $value === '') {
+            return [];
+        }
+
+        return [$value];
+    }
+
+    protected function applyTradeFilters(Builder $query, array $filters = []): Builder
+    {
+        $accountIds = $this->toArrayValue($filters['account_id'] ?? null);
+        if (!empty($accountIds)) {
+            $query->whereIn('account_id', $accountIds);
+        }
+
+        $assetIds = $this->toArrayValue($filters['asset_id'] ?? null);
+        if (!empty($assetIds)) {
+            $query->whereIn('asset_id', $assetIds);
+        }
+
+        $strategyIds = $this->toArrayValue($filters['strategy_id'] ?? null);
+        if (!empty($strategyIds)) {
+            $query->whereIn('strategy_id', $strategyIds);
+        }
+
+        $tagIds = $this->toArrayValue($filters['tag_id'] ?? null);
+        if (!empty($tagIds)) {
+            $query->whereHas('tags', function ($q) use ($tagIds) {
+                $q->whereIn('tags.id', $tagIds);
+            });
+        }
+
+        $categories = $this->toArrayValue($filters['category'] ?? null);
+        if (!empty($categories)) {
+            $query->whereHas('asset', function ($q) use ($categories) {
+                $q->whereIn('category', $categories);
+            });
+        }
+
+        $positionTypes = $this->toArrayValue($filters['position_type'] ?? null);
+        if (!empty($positionTypes)) {
+            if (count($positionTypes) === 1 && $positionTypes[0] === 'no_investment') {
+                $query->where('position_type', '!=', 'investment');
+            } else {
+                $query->whereIn('position_type', $positionTypes);
+            }
+        }
+
+        if (!empty($filters['date_from'])) {
+            $query->whereDate('entry_date', '>=', $filters['date_from']);
+        }
+
+        if (!empty($filters['date_to'])) {
+            $query->whereDate('entry_date', '<=', $filters['date_to']);
+        }
+
+        if (!empty($filters['search'])) {
+            $search = trim((string) $filters['search']);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('notes', 'like', "%{$search}%")
+                    ->orWhereHas('asset', function ($assetQuery) use ($search) {
+                        $assetQuery->where('symbol', 'like', "%{$search}%")
+                            ->orWhere('name', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('strategy', function ($strategyQuery) use ($search) {
+                        $strategyQuery->where('name', 'like', "%{$search}%");
+                    })
+                    ->orWhereHas('tags', function ($tagQuery) use ($search) {
+                        $tagQuery->where('name', 'like', "%{$search}%");
+                    });
+            });
+        }
+
+        return $query;
+    }
+
+    protected function normalizeTrades(Collection $trades, string $baseCurrency): Collection
+    {
+        return $trades->map(function (Trade $trade) use ($baseCurrency) {
+            return [
+                'trade_id' => $trade->id,
+                'asset_id' => $trade->asset_id,
+                'asset_symbol' => $trade->asset?->symbol ?? '-',
+                'asset_name' => $trade->asset?->name ?? '-',
+                'category' => $trade->asset?->category,
+                'strategy_id' => $trade->strategy_id,
+                'strategy_name' => $trade->strategy?->name ?? 'No Strategy',
+                'profit_loss' => $this->convertTradeProfitLossToBase($trade, $baseCurrency),
+                'entry_date' => $trade->entry_date,
+                'exit_date' => $trade->exit_date,
+            ];
         });
     }
 
-    protected function sumNegativeProfitLossAbs($items, string $key = 'profit_loss'): float
+    protected function sumPositiveProfitLoss(iterable $items, string $key = 'profit_loss'): float
     {
-        $lossSum = (float) $items->sum(function ($item) use ($key) {
+        $sum = 0;
+
+        foreach ($items as $item) {
             $value = is_array($item)
                 ? (float) ($item[$key] ?? 0)
                 : (float) ($item->{$key} ?? 0);
 
-            return $value < 0 ? $value : 0;
-        });
+            if ($value > 0) {
+                $sum += $value;
+            }
+        }
 
-        return (float) abs($lossSum);
+        return (float) $sum;
+    }
+
+    protected function sumNegativeProfitLossAbs(iterable $items, string $key = 'profit_loss'): float
+    {
+        $sum = 0;
+
+        foreach ($items as $item) {
+            $value = is_array($item)
+                ? (float) ($item[$key] ?? 0)
+                : (float) ($item->{$key} ?? 0);
+
+            if ($value < 0) {
+                $sum += abs($value);
+            }
+        }
+
+        return (float) $sum;
     }
 
     protected function calculateProfitFactor(float $grossProfit, float $grossLoss): ?float
@@ -103,80 +212,16 @@ class AnalyticsService
         return is_null($profitFactor) ? null : round($profitFactor, 2);
     }
 
-    public function getSummary(int $userId, array $filters = []): array
+    protected function makePerformancePayload(Collection $items, string $baseCurrency): array
     {
-        $baseCurrency = $this->getBaseCurrency($userId);
+        $totalTrades = $items->count();
 
-        $query = Trade::query()
-            ->with(['account', 'asset', 'strategy', 'tags'])
-            ->where('user_id', $userId)
-            ->whereNotNull('profit_loss');
+        $winningTrades = $items->filter(fn ($item) => (float) ($item['profit_loss'] ?? 0) > 0)->count();
+        $losingTrades = $items->filter(fn ($item) => (float) ($item['profit_loss'] ?? 0) < 0)->count();
 
-        if (!empty($filters['account_id'])) {
-            $query->where('account_id', $filters['account_id']);
-        }
-
-        if (!empty($filters['asset_id'])) {
-            $query->where('asset_id', $filters['asset_id']);
-        }
-
-        if (!empty($filters['strategy_id'])) {
-            $query->where('strategy_id', $filters['strategy_id']);
-        }
-
-        if (!empty($filters['position_type'])) {
-            $query->where('position_type', $filters['position_type']);
-        }
-
-        if (!empty($filters['date_from'])) {
-            $query->whereDate('entry_date', '>=', $filters['date_from']);
-        }
-
-        if (!empty($filters['date_to'])) {
-            $query->whereDate('entry_date', '<=', $filters['date_to']);
-        }
-
-        if (!empty($filters['search'])) {
-            $search = $filters['search'];
-
-            $query->where(function ($q) use ($search) {
-                $q->where('notes', 'like', "%{$search}%")
-                    ->orWhereHas('asset', function ($assetQuery) use ($search) {
-                        $assetQuery->where('symbol', 'like', "%{$search}%")
-                            ->orWhere('name', 'like', "%{$search}%");
-                    })
-                    ->orWhereHas('strategy', function ($strategyQuery) use ($search) {
-                        $strategyQuery->where('name', 'like', "%{$search}%");
-                    })
-                    ->orWhereHas('tags', function ($tagQuery) use ($search) {
-                        $tagQuery->where('name', 'like', "%{$search}%");
-                    });
-            });
-        }
-
-        $trades = $query->get();
-
-        $normalizedTrades = $trades->map(function (Trade $trade) use ($baseCurrency) {
-            return [
-                'profit_loss' => $this->convertTradeProfitLossToBase($trade, $baseCurrency),
-            ];
-        });
-
-        $totalTrades = $normalizedTrades->count();
-
-        $winningTrades = $normalizedTrades->filter(function (array $trade) {
-            return (float) $trade['profit_loss'] > 0;
-        })->count();
-
-        $losingTrades = $normalizedTrades->filter(function (array $trade) {
-            return (float) $trade['profit_loss'] < 0;
-        })->count();
-
-        $grossProfit = $this->sumPositiveProfitLoss($normalizedTrades);
-        $grossLoss = $this->sumNegativeProfitLossAbs($normalizedTrades);
-        $netProfit = (float) $normalizedTrades->sum(function (array $trade) {
-            return (float) ($trade['profit_loss'] ?? 0);
-        });
+        $grossProfit = $this->sumPositiveProfitLoss($items);
+        $grossLoss = $this->sumNegativeProfitLossAbs($items);
+        $netProfit = (float) $items->sum(fn ($item) => (float) ($item['profit_loss'] ?? 0));
 
         $averageWin = $winningTrades > 0 ? $grossProfit / $winningTrades : 0;
         $averageLoss = $losingTrades > 0 ? $grossLoss / $losingTrades : 0;
@@ -198,25 +243,63 @@ class AnalyticsService
         ];
     }
 
+    public function getSummary(int $userId, array $filters = []): array
+    {
+        $baseCurrency = $this->getBaseCurrency($userId);
+
+        $query = Trade::query()
+            ->with(['account', 'asset', 'strategy', 'tags'])
+            ->where('user_id', $userId)
+            ->whereNotNull('profit_loss');
+
+        $this->applyTradeFilters($query, $filters);
+
+        $normalizedTrades = $this->normalizeTrades($query->get(), $baseCurrency);
+
+        return $this->makePerformancePayload($normalizedTrades, $baseCurrency);
+    }
+
+    public function getStrategyPerformance(int $userId, array $filters = []): array
+    {
+        $baseCurrency = $this->getBaseCurrency($userId);
+
+        $query = Trade::query()
+            ->with(['strategy', 'account', 'asset', 'tags'])
+            ->where('user_id', $userId)
+            ->whereNotNull('profit_loss');
+
+        $this->applyTradeFilters($query, $filters);
+
+        $normalizedTrades = $this->normalizeTrades($query->get(), $baseCurrency);
+
+        return $normalizedTrades
+            ->groupBy('strategy_id')
+            ->map(function (Collection $group) use ($baseCurrency) {
+                $payload = $this->makePerformancePayload($group, $baseCurrency);
+
+                return [
+                    'strategy_id' => $group->first()['strategy_id'],
+                    'strategy_name' => $group->first()['strategy_name'],
+                    ...$payload,
+                ];
+            })
+            ->sortByDesc('net_profit')
+            ->values()
+            ->toArray();
+    }
+
     public function getTagPerformance(int $userId, array $filters = []): array
     {
         $baseCurrency = $this->getBaseCurrency($userId);
 
         $query = Trade::query()
-            ->with(['tags', 'account'])
+            ->with(['tags', 'account', 'asset', 'strategy'])
             ->where('user_id', $userId)
             ->whereNotNull('profit_loss');
 
-        if (!empty($filters['date_from'])) {
-            $query->whereDate('entry_date', '>=', $filters['date_from']);
-        }
-
-        if (!empty($filters['date_to'])) {
-            $query->whereDate('entry_date', '<=', $filters['date_to']);
-        }
+        $this->applyTradeFilters($query, $filters);
 
         $trades = $query->get();
-
         $tagMap = [];
 
         foreach ($trades as $trade) {
@@ -229,128 +312,30 @@ class AnalyticsService
                     $tagMap[$tagId] = [
                         'tag_id' => $tag->id,
                         'tag_name' => $tag->name,
-                        'total_trades' => 0,
-                        'winning_trades' => 0,
-                        'losing_trades' => 0,
-                        'net_profit' => 0.0,
-                        'gross_profit' => 0.0,
-                        'gross_loss' => 0.0,
+                        'rows' => [],
                     ];
                 }
 
-                $tagMap[$tagId]['total_trades']++;
-                $tagMap[$tagId]['net_profit'] += $profitLoss;
-
-                if ($profitLoss > 0) {
-                    $tagMap[$tagId]['winning_trades']++;
-                    $tagMap[$tagId]['gross_profit'] += $profitLoss;
-                }
-
-                if ($profitLoss < 0) {
-                    $tagMap[$tagId]['losing_trades']++;
-                    $tagMap[$tagId]['gross_loss'] += abs($profitLoss);
-                }
-            }
-        }
-
-        return collect($tagMap)->map(function (array $item) use ($baseCurrency) {
-            $totalTrades = (int) $item['total_trades'];
-            $grossProfit = (float) $item['gross_profit'];
-            $grossLoss = (float) $item['gross_loss'];
-            $netProfit = (float) $item['net_profit'];
-
-            $winRate = $totalTrades > 0
-                ? ($item['winning_trades'] / $totalTrades) * 100
-                : 0;
-
-            $profitFactor = $this->calculateProfitFactor($grossProfit, $grossLoss);
-
-            return [
-                'tag_id' => $item['tag_id'],
-                'tag_name' => $item['tag_name'],
-                'total_trades' => $totalTrades,
-                'winning_trades' => (int) $item['winning_trades'],
-                'losing_trades' => (int) $item['losing_trades'],
-                'win_rate' => round($winRate, 2),
-                'net_profit' => round($netProfit, 2),
-                'gross_profit' => round($grossProfit, 2),
-                'gross_loss' => round($grossLoss, 2),
-                'profit_factor' => $this->roundProfitFactor($profitFactor),
-                'display_currency' => $baseCurrency,
-            ];
-        })->sortByDesc('net_profit')->values()->toArray();
-    }
-
-    public function getStrategyPerformance(int $userId, array $filters = []): array
-    {
-        $baseCurrency = $this->getBaseCurrency($userId);
-
-        $query = Trade::query()
-            ->with(['strategy', 'account'])
-            ->where('user_id', $userId)
-            ->whereNotNull('profit_loss');
-
-            if (!empty($filters['date_from'])) {
-                $query->whereDate('entry_date', '>=', $filters['date_from']);
-            }
-
-            if (!empty($filters['date_to'])) {
-                $query->whereDate('entry_date', '<=', $filters['date_to']);
-            }
-
-        $trades = $query->get()
-                ->groupBy('strategy_id');
-
-        $results = [];
-
-        foreach ($trades as $strategyId => $group) {
-            $normalized = $group->map(function (Trade $trade) use ($baseCurrency) {
-                return [
-                    'profit_loss' => $this->convertTradeProfitLossToBase($trade, $baseCurrency),
+                $tagMap[$tagId]['rows'][] = [
+                    'profit_loss' => $profitLoss,
                 ];
-            });
-
-            $totalTrades = $normalized->count();
-
-            $winningTrades = $normalized->filter(function (array $trade) {
-                return (float) $trade['profit_loss'] > 0;
-            })->count();
-
-            $losingTrades = $normalized->filter(function (array $trade) {
-                return (float) $trade['profit_loss'] < 0;
-            })->count();
-
-            $grossProfit = $this->sumPositiveProfitLoss($normalized);
-            $grossLoss = $this->sumNegativeProfitLossAbs($normalized);
-            $netProfit = (float) $normalized->sum(function (array $trade) {
-                return (float) ($trade['profit_loss'] ?? 0);
-            });
-
-            $winRate = $totalTrades > 0 ? ($winningTrades / $totalTrades) * 100 : 0;
-            $profitFactor = $this->calculateProfitFactor($grossProfit, $grossLoss);
-
-            $strategyName = $group->first()?->strategy?->name ?? 'No Strategy';
-
-            $results[] = [
-                'strategy_id' => $strategyId,
-                'strategy_name' => $strategyName,
-                'total_trades' => $totalTrades,
-                'winning_trades' => $winningTrades,
-                'losing_trades' => $losingTrades,
-                'win_rate' => round($winRate, 2),
-                'net_profit' => round($netProfit, 2),
-                'gross_profit' => round($grossProfit, 2),
-                'gross_loss' => round($grossLoss, 2),
-                'profit_factor' => $this->roundProfitFactor($profitFactor),
-                'display_currency' => $baseCurrency,
-            ];
+            }
         }
 
-        usort($results, function ($a, $b) {
-            return $b['net_profit'] <=> $a['net_profit'];
-        });
+        return collect($tagMap)
+            ->map(function (array $item) use ($baseCurrency) {
+                $rows = collect($item['rows']);
+                $payload = $this->makePerformancePayload($rows, $baseCurrency);
 
-        return $results;
+                return [
+                    'tag_id' => $item['tag_id'],
+                    'tag_name' => $item['tag_name'],
+                    ...$payload,
+                ];
+            })
+            ->sortByDesc('net_profit')
+            ->values()
+            ->toArray();
     }
 
     public function getMonthlyPerformance(int $userId, array $filters = []): array
@@ -358,66 +343,64 @@ class AnalyticsService
         $baseCurrency = $this->getBaseCurrency($userId);
 
         $query = Trade::query()
-            ->with('account')
+            ->with(['account', 'asset', 'strategy', 'tags'])
             ->where('user_id', $userId)
             ->whereNotNull('profit_loss')
             ->whereNotNull('exit_date')
             ->orderBy('exit_date');
 
-        if (!empty($filters['date_from'])) {
-            $query->whereDate('entry_date', '>=', $filters['date_from']);
-        }
+        $this->applyTradeFilters($query, $filters);
 
-        if (!empty($filters['date_to'])) {
-            $query->whereDate('entry_date', '<=', $filters['date_to']);
-        }
+        $normalizedTrades = $this->normalizeTrades($query->get(), $baseCurrency);
 
-        $trades = $query->get()
-                ->map(function (Trade $trade) use ($baseCurrency) {
-                    $trade->profit_loss = $this->convertTradeProfitLossToBase($trade, $baseCurrency);
-                    return $trade;
-                })
-                ->groupBy(function (Trade $trade) {
-                    return $trade->exit_date->format('Y-m');
-                });
+        return $normalizedTrades
+            ->groupBy(function (array $trade) {
+                return $trade['exit_date']
+                    ? $trade['exit_date']->format('Y-m')
+                    : 'unknown';
+            })
+            ->map(function (Collection $group, string $month) use ($baseCurrency) {
+                $payload = $this->makePerformancePayload($group, $baseCurrency);
 
-        $results = [];
+                return [
+                    'month' => $month,
+                    ...$payload,
+                ];
+            })
+            ->values()
+            ->toArray();
+    }
 
-        foreach ($trades as $month => $group) {
-            $totalTrades = $group->count();
+    public function getAssetPerformance(int $userId, array $filters = []): array
+    {
+        $baseCurrency = $this->getBaseCurrency($userId);
 
-            $winningTrades = $group->filter(function (Trade $trade) {
-                return (float) $trade->profit_loss > 0;
-            })->count();
+        $query = Trade::query()
+            ->with(['asset', 'account', 'strategy', 'tags'])
+            ->where('user_id', $userId)
+            ->whereNotNull('profit_loss');
 
-            $losingTrades = $group->filter(function (Trade $trade) {
-                return (float) $trade->profit_loss < 0;
-            })->count();
+        $this->applyTradeFilters($query, $filters);
 
-            $grossProfit = $this->sumPositiveProfitLoss($group);
-            $grossLoss = $this->sumNegativeProfitLossAbs($group);
-            $netProfit = (float) $group->sum(function (Trade $trade) {
-                return (float) ($trade->profit_loss ?? 0);
-            });
+        $normalizedTrades = $this->normalizeTrades($query->get(), $baseCurrency);
 
-            $winRate = $totalTrades > 0 ? ($winningTrades / $totalTrades) * 100 : 0;
-            $profitFactor = $this->calculateProfitFactor($grossProfit, $grossLoss);
+        return $normalizedTrades
+            ->groupBy('asset_id')
+            ->map(function (Collection $group) use ($baseCurrency) {
+                $first = $group->first();
+                $payload = $this->makePerformancePayload($group, $baseCurrency);
 
-            $results[] = [
-                'month' => $month,
-                'total_trades' => $totalTrades,
-                'winning_trades' => $winningTrades,
-                'losing_trades' => $losingTrades,
-                'win_rate' => round($winRate, 2),
-                'net_profit' => round($netProfit, 2),
-                'gross_profit' => round($grossProfit, 2),
-                'gross_loss' => round($grossLoss, 2),
-                'profit_factor' => $this->roundProfitFactor($profitFactor),
-                'display_currency' => $baseCurrency,
-            ];
-        }
-
-        return array_values($results);
+                return [
+                    'asset_id' => $first['asset_id'],
+                    'asset_symbol' => $first['asset_symbol'],
+                    'asset_name' => $first['asset_name'],
+                    'category' => $first['category'],
+                    ...$payload,
+                ];
+            })
+            ->sortByDesc('net_profit')
+            ->values()
+            ->toArray();
     }
 
     public function getPortfolioSummary(int $userId): array
@@ -443,7 +426,6 @@ class AnalyticsService
         $totalPositions = $positions->count();
         $totalQuantity = (float) $positions->sum('quantity');
         $totalInvested = (float) $normalized->sum('invested_value');
-
         $largest = $normalized->sortByDesc('invested_value')->first();
 
         return [
@@ -468,27 +450,40 @@ class AnalyticsService
             ->where('user_id', $userId)
             ->get();
 
-        $values = $positions->map(function ($position) use ($baseCurrency) {
-            $fromCurrency = strtoupper(trim((string) ($position->account?->currency ?? 'IDR')));
-            $rawValue = (float) $position->quantity * (float) $position->avg_price;
+        $grouped = $positions
+            ->map(function ($position) use ($baseCurrency) {
+                $fromCurrency = strtoupper(trim((string) ($position->account?->currency ?? 'IDR')));
+                $rawValue = (float) $position->quantity * (float) $position->avg_price;
 
-            return [
-                'asset' => $position->asset?->symbol ?? '-',
-                'value' => $this->convertMoney($rawValue, $fromCurrency, $baseCurrency),
-            ];
-        });
+                return [
+                    'asset' => $position->asset?->symbol ?? '-',
+                    'value' => $this->convertMoney($rawValue, $fromCurrency, $baseCurrency),
+                ];
+            })
+            ->groupBy('asset')
+            ->map(function (Collection $items, string $asset) {
+                return [
+                    'asset' => $asset,
+                    'value' => (float) $items->sum('value'),
+                ];
+            })
+            ->values();
 
-        $total = (float) $values->sum('value');
+        $total = (float) $grouped->sum('value');
 
-        return $values->map(function (array $item) use ($total, $baseCurrency) {
-            return [
-                'asset' => $item['asset'],
-                'value' => round((float) $item['value'], 2),
-                'percentage' => $total > 0
-                    ? round(((float) $item['value'] / $total) * 100, 2)
-                    : 0,
-                'display_currency' => $baseCurrency,
-            ];
-        })->values()->toArray();
+        return $grouped
+            ->map(function (array $item) use ($total, $baseCurrency) {
+                return [
+                    'asset' => $item['asset'],
+                    'value' => round((float) $item['value'], 2),
+                    'percentage' => $total > 0
+                        ? round(((float) $item['value'] / $total) * 100, 2)
+                        : 0,
+                    'display_currency' => $baseCurrency,
+                ];
+            })
+            ->sortByDesc('value')
+            ->values()
+            ->toArray();
     }
 }

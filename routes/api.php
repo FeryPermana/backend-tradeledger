@@ -135,13 +135,14 @@ Route::middleware('auth:sanctum')->group(function () {
     | ANALYTICS (PREMIUM)
     |--------------------------------------------------------------------------
     */
-    Route::get('analytics/summary', [AnalyticsController::class, 'strategySummary']);
+    Route::get('analytics/summary', [AnalyticsController::class, 'summary']);
     Route::prefix('analytics')->middleware('premium')->group(function () {
         Route::get('tag-performance', [AnalyticsController::class, 'tagPerformance']);
         Route::get('strategy-performance', [AnalyticsController::class, 'strategyPerformance']);
         Route::get('monthly-performance', [AnalyticsController::class, 'monthlyPerformance']);
         Route::get('portfolio-summary', [AnalyticsController::class, 'portfolioSummary']);
         Route::get('asset-allocation', [AnalyticsController::class, 'assetAllocation']);
+        Route::get('asset-performance', [AnalyticsController::class, 'assetPerformance']);
     });
 });
 

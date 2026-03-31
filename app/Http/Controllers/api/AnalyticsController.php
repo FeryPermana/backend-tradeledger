@@ -6,13 +6,38 @@ use App\Http\Controllers\Controller;
 use App\Services\AnalyticsService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
-use App\Services\ApiResponseService;
 
 class AnalyticsController extends Controller
 {
-    public function __construct(protected AnalyticsService $analyticsService, protected ApiResponseService $apiResponse)
-    {
+    public function __construct(
+        protected AnalyticsService $analyticsService
+    ) {
+    }
 
+    public function summary(Request $request): JsonResponse
+    {
+        $data = $this->analyticsService->getSummary($request->user()->id, $request->all());
+
+        return response()->json([
+            'message' => [
+                'id' => 'Ringkasan performa berhasil diambil.',
+                'en' => 'Summary performance retrieved successfully.'
+            ],
+            'data' => $data,
+        ]);
+    }
+
+    public function strategyPerformance(Request $request): JsonResponse
+    {
+        $data = $this->analyticsService->getStrategyPerformance($request->user()->id, $request->all());
+
+        return response()->json([
+            'message' => [
+                'id' => 'Performa strategi berhasil diambil.',
+                'en' => 'Strategy performance retrieved successfully.'
+            ],
+            'data' => $data,
+        ]);
     }
 
     public function tagPerformance(Request $request): JsonResponse
@@ -28,33 +53,7 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    public function strategySummary(Request $request): \Illuminate\Http\JsonResponse
-    {
-        $data = $this->analyticsService->getSummary($request->user()->id, $request->all());
-
-        return response()->json([
-            'message' => [
-                'id' => 'Total strategi berhasil diambil.',
-                'en' => 'Summary performance retrieved successfully.'
-            ],
-            'data' => $data,
-        ]);
-    }
-
-    public function strategyPerformance(Request $request): \Illuminate\Http\JsonResponse
-    {
-        $data = $this->analyticsService->getStrategyPerformance($request->user()->id, $request->all());
-
-        return response()->json([
-            'message' => [
-                'id' => 'Performa strategi berhasil diambil.',
-                'en' => 'Strategy performance retrieved successfully.'
-            ],
-            'data' => $data,
-        ]);
-    }
-
-    public function monthlyPerformance(Request $request): \Illuminate\Http\JsonResponse
+    public function monthlyPerformance(Request $request): JsonResponse
     {
         $data = $this->analyticsService->getMonthlyPerformance($request->user()->id, $request->all());
 
@@ -67,7 +66,20 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    public function portfolioSummary(Request $request)
+    public function assetPerformance(Request $request): JsonResponse
+    {
+        $data = $this->analyticsService->getAssetPerformance($request->user()->id, $request->all());
+
+        return response()->json([
+            'message' => [
+                'id' => 'Performa aset berhasil diambil.',
+                'en' => 'Asset performance retrieved successfully.'
+            ],
+            'data' => $data,
+        ]);
+    }
+
+    public function portfolioSummary(Request $request): JsonResponse
     {
         $data = $this->analyticsService->getPortfolioSummary($request->user()->id);
 
@@ -80,7 +92,7 @@ class AnalyticsController extends Controller
         ]);
     }
 
-    public function assetAllocation(Request $request)
+    public function assetAllocation(Request $request): JsonResponse
     {
         $data = $this->analyticsService->getAssetAllocation($request->user()->id);
 
@@ -92,5 +104,4 @@ class AnalyticsController extends Controller
             'data' => $data,
         ]);
     }
-
 }
