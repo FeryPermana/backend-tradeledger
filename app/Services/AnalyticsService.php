@@ -198,15 +198,24 @@ class AnalyticsService
         ];
     }
 
-    public function getTagPerformance(int $userId): array
+    public function getTagPerformance(int $userId, array $filters = []): array
     {
         $baseCurrency = $this->getBaseCurrency($userId);
 
-        $trades = Trade::query()
+        $query = Trade::query()
             ->with(['tags', 'account'])
             ->where('user_id', $userId)
-            ->whereNotNull('profit_loss')
-            ->get();
+            ->whereNotNull('profit_loss');
+
+        if (!empty($filters['date_from'])) {
+            $query->whereDate('entry_date', '>=', $filters['date_from']);
+        }
+
+        if (!empty($filters['date_to'])) {
+            $query->whereDate('entry_date', '<=', $filters['date_to']);
+        }
+
+        $trades = $query->get();
 
         $tagMap = [];
 
@@ -272,16 +281,25 @@ class AnalyticsService
         })->sortByDesc('net_profit')->values()->toArray();
     }
 
-    public function getStrategyPerformance(int $userId): array
+    public function getStrategyPerformance(int $userId, array $filters = []): array
     {
         $baseCurrency = $this->getBaseCurrency($userId);
 
-        $trades = Trade::query()
+        $query = Trade::query()
             ->with(['strategy', 'account'])
             ->where('user_id', $userId)
-            ->whereNotNull('profit_loss')
-            ->get()
-            ->groupBy('strategy_id');
+            ->whereNotNull('profit_loss');
+
+            if (!empty($filters['date_from'])) {
+                $query->whereDate('entry_date', '>=', $filters['date_from']);
+            }
+
+            if (!empty($filters['date_to'])) {
+                $query->whereDate('entry_date', '<=', $filters['date_to']);
+            }
+
+        $trades = $query->get()
+                ->groupBy('strategy_id');
 
         $results = [];
 
@@ -335,24 +353,33 @@ class AnalyticsService
         return $results;
     }
 
-    public function getMonthlyPerformance(int $userId): array
+    public function getMonthlyPerformance(int $userId, array $filters = []): array
     {
         $baseCurrency = $this->getBaseCurrency($userId);
 
-        $trades = Trade::query()
+        $query = Trade::query()
             ->with('account')
             ->where('user_id', $userId)
             ->whereNotNull('profit_loss')
             ->whereNotNull('exit_date')
-            ->orderBy('exit_date')
-            ->get()
-            ->map(function (Trade $trade) use ($baseCurrency) {
-                $trade->profit_loss = $this->convertTradeProfitLossToBase($trade, $baseCurrency);
-                return $trade;
-            })
-            ->groupBy(function (Trade $trade) {
-                return $trade->exit_date->format('Y-m');
-            });
+            ->orderBy('exit_date');
+
+        if (!empty($filters['date_from'])) {
+            $query->whereDate('entry_date', '>=', $filters['date_from']);
+        }
+
+        if (!empty($filters['date_to'])) {
+            $query->whereDate('entry_date', '<=', $filters['date_to']);
+        }
+
+        $trades = $query->get()
+                ->map(function (Trade $trade) use ($baseCurrency) {
+                    $trade->profit_loss = $this->convertTradeProfitLossToBase($trade, $baseCurrency);
+                    return $trade;
+                })
+                ->groupBy(function (Trade $trade) {
+                    return $trade->exit_date->format('Y-m');
+                });
 
         $results = [];
 

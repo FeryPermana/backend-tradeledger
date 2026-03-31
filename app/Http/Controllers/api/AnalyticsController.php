@@ -17,7 +17,7 @@ class AnalyticsController extends Controller
 
     public function tagPerformance(Request $request): JsonResponse
     {
-        $data = $this->analyticsService->getTagPerformance($request->user()->id);
+        $data = $this->analyticsService->getTagPerformance($request->user()->id, $request->all());
 
         return response()->json([
             'message' => [
@@ -30,7 +30,7 @@ class AnalyticsController extends Controller
 
     public function strategySummary(Request $request): \Illuminate\Http\JsonResponse
     {
-        $data = $this->analyticsService->getSummary($request->user()->id);
+        $data = $this->analyticsService->getSummary($request->user()->id, $request->all());
 
         return response()->json([
             'message' => [
@@ -43,7 +43,7 @@ class AnalyticsController extends Controller
 
     public function strategyPerformance(Request $request): \Illuminate\Http\JsonResponse
     {
-        $data = $this->analyticsService->getStrategyPerformance($request->user()->id);
+        $data = $this->analyticsService->getStrategyPerformance($request->user()->id, $request->all());
 
         return response()->json([
             'message' => [
@@ -56,7 +56,7 @@ class AnalyticsController extends Controller
 
     public function monthlyPerformance(Request $request): \Illuminate\Http\JsonResponse
     {
-        $data = $this->analyticsService->getMonthlyPerformance($request->user()->id);
+        $data = $this->analyticsService->getMonthlyPerformance($request->user()->id, $request->all());
 
         return response()->json([
             'message' => [
