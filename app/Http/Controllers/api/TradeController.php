@@ -167,13 +167,6 @@ class TradeController extends Controller
         $fees = isset($input['fees']) ? (float) $input['fees'] : (float) ($trade->fees ?? 0);
         $exitDate = $input['exit_date'] ?? $trade->exit_date;
 
-        if (empty($exitDate)) {
-            $requiredCash = ($entryPrice * $quantity) + $fees;
-            if (! $this->accountBalanceService->hasEnoughBalance($account, $requiredCash, $trade->id)) {
-                return $this->apiResponse->error('Saldo account tidak cukup.', 'Insufficient balance.', 422);
-            }
-        }
-
         try {
             DB::transaction(function () use ($request, $trade, $input, $fees, $entryPrice, $quantity) {
                 $oldTrade = $trade->replicate();
