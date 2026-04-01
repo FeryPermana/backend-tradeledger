@@ -152,220 +152,104 @@ class TradeController extends Controller
 
         $input = $request->validated();
 
+        // Proteksi: entry_price dan quantity tidak boleh diubah
+        unset($input['entry_price'], $input['quantity']);
+
         $account = Account::query()
             ->where('id', $trade->account_id)
             ->where('user_id', $request->user()->id)
             ->firstOrFail();
 
-        $entryPrice = (float) ($input['entry_price'] ?? $trade->entry_price);
+        $entryPrice = (float) $trade->entry_price;
         $quantity = (float) $trade->quantity;
-        $fees = (float) ($input['fees'] ?? $trade->fees ?? 0);
+
+        // Pastikan fees mengambil input terbaru
+        $fees = isset($input['fees']) ? (float) $input['fees'] : (float) ($trade->fees ?? 0);
         $exitDate = $input['exit_date'] ?? $trade->exit_date;
 
         if (empty($exitDate)) {
             $requiredCash = ($entryPrice * $quantity) + $fees;
-
             if (! $this->accountBalanceService->hasEnoughBalance($account, $requiredCash, $trade->id)) {
-                return $this->apiResponse->error(
-                    'Saldo account tidak cukup untuk mengupdate trade ini.',
-                    'Account balance is insufficient to update this trade.',
-                    422
-                );
+                return $this->apiResponse->error('Saldo account tidak cukup.', 'Insufficient balance.', 422);
             }
         }
 
         try {
-            DB::transaction(function () use ($request, $trade, $input) {
+            DB::transaction(function () use ($request, $trade, $input, $fees, $entryPrice, $quantity) {
                 $oldTrade = $trade->replicate();
                 $oldTrade->id = $trade->id;
-
                 $tagIds = $request->validated('tag_ids', []);
 
+                // 1. Investment Mode
                 if ($trade->position_type === 'investment') {
-                    unset($input['quantity'], $input['closed_quantity']);
-
-                    $merged = array_merge($trade->toArray(), $input);
-                    $prepared = $this->tradeService->prepareTradeData($merged);
-
+                    $prepared = $this->tradeService->prepareTradeData(array_merge($trade->toArray(), $input));
+                    $prepared['fees'] = $fees;
                     $trade->update($prepared);
                     $trade->tags()->sync($tagIds);
-
-                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
-                    $this->tradePortfolioSyncService->syncFromTrade($trade);
-
+                    $this->syncTrade($oldTrade, $trade);
                     return;
                 }
 
+                // 2. Closed Trade Mode
                 if ($trade->status === 'closed') {
-                    unset($input['quantity'], $input['closed_quantity']);
-
-                    $merged = array_merge($trade->toArray(), $input);
-                    $prepared = $this->tradeService->prepareTradeData($merged);
-
-                    $prepared['status'] = 'closed';
-                    $prepared['closed_quantity'] = $trade->closed_quantity;
+                    $prepared = $this->tradeService->prepareTradeData(array_merge($trade->toArray(), $input));
+                    $prepared['fees'] = $fees;
                     $prepared['quantity'] = $trade->quantity;
-                    $prepared['exit_price'] = $trade->exit_price;
-                    $prepared['exit_date'] = $trade->exit_date;
-                    $prepared['profit_loss'] = $trade->profit_loss;
-                    $prepared['r_multiple'] = $trade->r_multiple;
+                    $prepared['closed_quantity'] = $trade->closed_quantity;
 
                     $trade->update($prepared);
                     $trade->tags()->sync($tagIds);
-
-                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
-                    $this->tradePortfolioSyncService->syncFromTrade($trade);
-
+                    $this->syncTrade($oldTrade, $trade);
                     return;
                 }
 
-                $incrementClose = isset($input['closed_quantity']) && $input['closed_quantity'] !== ''
-                    ? (float) $input['closed_quantity']
-                    : 0.0;
-
+                $incrementClose = isset($input['closed_quantity']) ? (float) $input['closed_quantity'] : 0.0;
                 $oldClosedQuantity = (float) ($trade->closed_quantity ?? 0);
-                $totalQuantity = (float) $trade->quantity;
-
-                if ($this->isEffectivelyClosed($oldClosedQuantity, $totalQuantity)) {
-                    throw new \RuntimeException('Trade sudah fully closed.');
-                }
-
-                if ($incrementClose < 0) {
-                    $incrementClose = 0.0;
-                }
-
-                $newClosedQuantity = $this->tradeService->normalizeClosedQuantity(
-                    $totalQuantity,
-                    $oldClosedQuantity + $incrementClose
-                );
-
+                $newClosedQuantity = $this->tradeService->normalizeClosedQuantity($quantity, $oldClosedQuantity + $incrementClose);
                 $actualIncrement = round($newClosedQuantity - $oldClosedQuantity, 8);
+                $isFullyClosed = $this->isEffectivelyClosed($newClosedQuantity, $quantity);
 
-                if ($this->isEffectivelyZero($actualIncrement)) {
-                    $actualIncrement = 0.0;
-                }
-
-                $isFullyClosed = $this->isEffectivelyClosed($newClosedQuantity, $totalQuantity);
-
-                if ($incrementClose > 0 && $actualIncrement <= 0) {
-                    throw new \RuntimeException('Tidak ada quantity tersisa untuk partial close.');
-                }
-
-                if ($actualIncrement > 0) {
-                    if (empty($input['exit_price'])) {
-                        throw new \RuntimeException('Exit price wajib diisi untuk partial close.');
-                    }
-
-                    if (empty($input['exit_date'])) {
-                        throw new \RuntimeException('Exit date wajib diisi untuk partial close.');
-                    }
-                }
-
+                // 3. Regular Update (No Close)
                 if ($actualIncrement <= 0) {
-                    unset($input['quantity'], $input['closed_quantity']);
-                    unset($input['exit_price'], $input['exit_date']);
-
-                    $merged = array_merge($trade->toArray(), $input);
-                    $prepared = $this->tradeService->prepareTradeData($merged);
-
-                    $prepared['closed_quantity'] = $trade->closed_quantity;
-                    $prepared['status'] = $trade->status;
+                    $prepared = $this->tradeService->prepareTradeData(array_merge($trade->toArray(), $input));
+                    $prepared['fees'] = $fees;
                     $prepared['quantity'] = $trade->quantity;
-                    $prepared['exit_price'] = $trade->exit_price;
-                    $prepared['exit_date'] = $trade->exit_date;
-                    $prepared['profit_loss'] = $trade->profit_loss;
-                    $prepared['r_multiple'] = $trade->r_multiple;
 
                     $trade->update($prepared);
                     $trade->tags()->sync($tagIds);
-
-                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
-                    $this->tradePortfolioSyncService->syncFromTrade($trade);
-
+                    $this->syncTrade($oldTrade, $trade);
                     return;
                 }
 
+                // 4. Fully Closed via Update
                 if ($isFullyClosed) {
                     $exitPrice = (float) $input['exit_price'];
-                    $finalFees = (float) ($input['fees'] ?? $trade->fees ?? 0);
-                    $finalStopLoss = isset($input['stop_loss']) && $input['stop_loss'] !== ''
-                        ? (float) $input['stop_loss']
-                        : (isset($trade->stop_loss) ? (float) $trade->stop_loss : null);
-
-                    $finalProfitLoss = $this->tradeService->calculateProfitLoss(
-                        (float) $trade->entry_price,
-                        $exitPrice,
-                        $totalQuantity,
-                        $finalFees
-                    );
-
-                    $finalRMultiple = $this->tradeService->calculateRMultiple(
-                        (float) $trade->entry_price,
-                        $finalStopLoss,
-                        $totalQuantity,
-                        $finalProfitLoss
-                    );
+                    $finalProfitLoss = $this->tradeService->calculateProfitLoss($entryPrice, $exitPrice, $quantity, $fees);
+                    $finalRMultiple = $this->tradeService->calculateRMultiple($entryPrice, (float)($input['stop_loss'] ?? $trade->stop_loss), $quantity, $finalProfitLoss);
 
                     $trade->update([
+                        'fees' => $fees,
                         'exit_price' => $exitPrice,
-                        'closed_quantity' => $totalQuantity,
-                        'stop_loss' => $finalStopLoss,
-                        'take_profit' => $input['take_profit'] ?? $trade->take_profit,
-                        'fees' => $finalFees,
+                        'closed_quantity' => $quantity,
+                        'status' => 'closed',
                         'profit_loss' => $finalProfitLoss,
                         'r_multiple' => $finalRMultiple,
                         'exit_date' => $input['exit_date'],
-                        'status' => 'closed',
                         'notes' => $input['notes'] ?? $trade->notes,
+                        'stop_loss' => $input['stop_loss'] ?? $trade->stop_loss,
+                        'take_profit' => $input['take_profit'] ?? $trade->take_profit,
                     ]);
-
                     $trade->tags()->sync($tagIds);
-
-                    $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
-                    $this->tradePortfolioSyncService->syncFromTrade($trade);
-
+                    $this->syncTrade($oldTrade, $trade);
                     return;
                 }
 
-                if ($this->isEffectivelyClosed($newClosedQuantity, $totalQuantity)) {
-                    throw new \RuntimeException('Partial generated trade must not be created for full close');
-                }
-
+                // 5. Partial Close (Create New Trade)
                 $trade->update([
                     'closed_quantity' => $newClosedQuantity,
                     'status' => 'partial',
-                    'exit_price' => $trade->exit_price,
-                    'exit_date' => $trade->exit_date,
-                    'profit_loss' => $trade->profit_loss,
-                    'r_multiple' => $trade->r_multiple,
                     'notes' => $input['notes'] ?? $trade->notes,
-                    'stop_loss' => $input['stop_loss'] ?? $trade->stop_loss,
-                    'take_profit' => $input['take_profit'] ?? $trade->take_profit,
-                    'fees' => $input['fees'] ?? $trade->fees,
                 ]);
-
-                $trade->tags()->sync($tagIds);
-
-                $generatedEntryPrice = (float) $trade->entry_price;
-                $generatedExitPrice = (float) $input['exit_price'];
-                $generatedFees = (float) ($input['fees'] ?? 0);
-                $generatedStopLoss = isset($input['stop_loss']) && $input['stop_loss'] !== ''
-                    ? (float) $input['stop_loss']
-                    : (isset($trade->stop_loss) ? (float) $trade->stop_loss : null);
-
-                $generatedProfitLoss = $this->tradeService->calculateProfitLoss(
-                    $generatedEntryPrice,
-                    $generatedExitPrice,
-                    $actualIncrement,
-                    $generatedFees
-                );
-
-                $generatedRMultiple = $this->tradeService->calculateRMultiple(
-                    $generatedEntryPrice,
-                    $generatedStopLoss,
-                    $actualIncrement,
-                    $generatedProfitLoss
-                );
 
                 $generatedTrade = Trade::create([
                     'user_id' => $trade->user_id,
@@ -373,39 +257,30 @@ class TradeController extends Controller
                     'asset_id' => $trade->asset_id,
                     'strategy_id' => $trade->strategy_id,
                     'position_type' => $trade->position_type,
-                    'entry_price' => $generatedEntryPrice,
-                    'exit_price' => $generatedExitPrice,
+                    'entry_price' => $entryPrice,
+                    'exit_price' => (float) $input['exit_price'],
                     'quantity' => $actualIncrement,
                     'closed_quantity' => $actualIncrement,
-                    'stop_loss' => $generatedStopLoss,
-                    'take_profit' => $input['take_profit'] ?? $trade->take_profit,
-                    'fees' => $generatedFees,
-                    'profit_loss' => $generatedProfitLoss,
-                    'r_multiple' => $generatedRMultiple,
+                    'fees' => $fees,
+                    'status' => 'closed',
                     'entry_date' => $trade->entry_date,
                     'exit_date' => $input['exit_date'],
-                    'status' => 'closed',
                     'notes' => $this->buildGeneratedCloseNote($trade->notes, $actualIncrement),
                 ]);
 
                 $generatedTrade->tags()->sync($tagIds);
-
-                $this->tradePortfolioSyncService->syncFromTrade($oldTrade);
-                $this->tradePortfolioSyncService->syncFromTrade($trade);
+                $this->syncTrade($oldTrade, $trade);
             });
         } catch (\RuntimeException $e) {
-            return $this->apiResponse->error(
-                $e->getMessage(),
-                $e->getMessage(),
-                422
-            );
+            return $this->apiResponse->error($e->getMessage(), $e->getMessage(), 422);
         }
 
-        return $this->apiResponse->success(
-            'Trade berhasil diupdate.',
-            'Trade updated successfully.',
-            $trade->fresh()->load(['account', 'asset', 'strategy', 'tags'])->toArray()
-        );
+        return $this->apiResponse->success('Trade updated.', 'Success.', $trade->fresh()->load(['tags'])->toArray());
+    }
+
+    private function syncTrade($old, $new) {
+        $this->tradePortfolioSyncService->syncFromTrade($old);
+        $this->tradePortfolioSyncService->syncFromTrade($new);
     }
 
     public function destroy(Request $request, Trade $trade): JsonResponse
