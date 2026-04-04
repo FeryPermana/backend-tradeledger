@@ -18,49 +18,12 @@ class PortfolioPositionController extends Controller
     public function __construct(
         protected ApiResponseService $apiResponse,
         protected PortfolioService $portfolioService
-    ) {}
+    ) {
+    }
 
     public function index(Request $request): JsonResponse
     {
-        $query = PortfolioPosition::query()
-            ->with(['asset', 'account'])
-            ->where('user_id', $request->user()->id);
-
-        if ($request->filled('search')) {
-            $search = trim((string) $request->search);
-
-            $query->whereHas('asset', function ($assetQuery) use ($search) {
-                $assetQuery->where('symbol', 'like', '%' . $search . '%')
-                    ->orWhere('name', 'like', '%' . $search . '%');
-            });
-        }
-
-        if ($request->filled('conviction_level')) {
-            $query->where('conviction_level', $request->conviction_level);
-        }
-
-        if ($request->filled('horizon')) {
-            $query->where('horizon', $request->horizon);
-        }
-
-        $positions = $query
-            ->latest()
-            ->get()
-            ->map(function ($position) {
-                $accountCurrency = strtoupper($position->account?->currency ?? 'IDR');
-
-                $metrics = $this->portfolioService->getPositionMetrics($position, $accountCurrency);
-
-                return array_merge(
-                    $position->toArray(),
-                    $metrics,
-                    [
-                        'display_currency' => $accountCurrency,
-                        'avg_price' => $metrics['avg_price_display'],
-                        'total_fees' => $metrics['total_fees_display'],
-                    ]
-                );
-            });
+        $positions = $this->portfolioService->getPositions($request->user(), $request->all());
 
         return response()->json([
             'message' => [
@@ -100,6 +63,8 @@ class PortfolioPositionController extends Controller
             'conviction_level' => $request->validated('conviction_level'),
             'thesis' => $request->validated('thesis'),
             'notes' => $request->validated('notes'),
+            'current_price' => $request->validated('current_price'),
+            'last_price_updated_at' => $request->validated('current_price') !== null ? now() : null,
         ]);
 
         return $this->apiResponse->success(
@@ -114,10 +79,23 @@ class PortfolioPositionController extends Controller
     {
         abort_if($portfolioPosition->user_id !== $request->user()->id, 403);
 
+        $portfolioPosition->load(['asset', 'account']);
+
+        $accountCurrency = strtoupper($portfolioPosition->account?->currency ?? 'IDR');
+        $metrics = $this->portfolioService->getPositionMetrics($portfolioPosition, $accountCurrency);
+
         return $this->apiResponse->success(
             'Detail portofolio berhasil diambil.',
             'Portfolio detail retrieved successfully.',
-            $portfolioPosition->load(['asset', 'account'])->toArray()
+            array_merge(
+                $portfolioPosition->toArray(),
+                $metrics,
+                [
+                    'display_currency' => $accountCurrency,
+                    'avg_price' => $metrics['avg_price_display'],
+                    'total_fees' => $metrics['total_fees_display'],
+                ]
+            )
         );
     }
 
@@ -132,6 +110,10 @@ class PortfolioPositionController extends Controller
                 'conviction_level' => $request->validated('conviction_level'),
                 'thesis' => $request->validated('thesis'),
                 'notes' => $request->validated('notes'),
+                'current_price' => $request->validated('current_price', $portfolioPosition->current_price),
+                'last_price_updated_at' => $request->has('current_price')
+                    ? now()
+                    : $portfolioPosition->last_price_updated_at,
             ]);
 
             return $this->apiResponse->success(
@@ -151,6 +133,10 @@ class PortfolioPositionController extends Controller
             'conviction_level' => $request->validated('conviction_level'),
             'thesis' => $request->validated('thesis'),
             'notes' => $request->validated('notes'),
+            'current_price' => $request->validated('current_price', $portfolioPosition->current_price),
+            'last_price_updated_at' => $request->has('current_price')
+                ? now()
+                : $portfolioPosition->last_price_updated_at,
         ]);
 
         return $this->apiResponse->success(
@@ -199,6 +185,38 @@ class PortfolioPositionController extends Controller
             'Alokasi portofolio berhasil diambil.',
             'Portfolio allocation retrieved successfully.',
             $allocation
+        );
+    }
+
+    public function updateCurrentPrice(Request $request, PortfolioPosition $portfolioPosition): JsonResponse
+    {
+        abort_if($portfolioPosition->user_id !== $request->user()->id, 403);
+
+        $validated = $request->validate([
+            'current_price' => ['required', 'numeric', 'min:0'],
+        ]);
+
+        $portfolioPosition->update([
+            'current_price' => $validated['current_price'],
+            'last_price_updated_at' => now(),
+        ]);
+
+        $portfolioPosition->load(['asset', 'account']);
+        $accountCurrency = strtoupper($portfolioPosition->account?->currency ?? 'IDR');
+        $metrics = $this->portfolioService->getPositionMetrics($portfolioPosition, $accountCurrency);
+
+        return $this->apiResponse->success(
+            'Harga posisi berhasil diperbarui.',
+            'Position price updated successfully.',
+            array_merge(
+                $portfolioPosition->toArray(),
+                $metrics,
+                [
+                    'display_currency' => $accountCurrency,
+                    'avg_price' => $metrics['avg_price_display'],
+                    'total_fees' => $metrics['total_fees_display'],
+                ]
+            )
         );
     }
 

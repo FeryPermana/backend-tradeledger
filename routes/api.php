@@ -108,6 +108,7 @@ Route::middleware('auth:sanctum')->group(function () {
     Route::get('portfolio-positions/{portfolioPosition}', [PortfolioPositionController::class, 'show']);
     Route::put('portfolio-positions/{portfolioPosition}', [PortfolioPositionController::class, 'update']);
     Route::delete('portfolio-positions/{portfolioPosition}', [PortfolioPositionController::class, 'destroy']);
+    Route::patch('portfolio-positions/{portfolioPosition}/current-price', [PortfolioPositionController::class, 'updateCurrentPrice']);
     Route::post(
         'portfolio-positions/{portfolioPosition}/partial-close',
         [PortfolioPositionController::class, 'partialClose']

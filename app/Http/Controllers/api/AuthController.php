@@ -163,15 +163,15 @@ class AuthController extends Controller
     {
         $user = User::findOrFail($id);
 
-        if (! hash_equals((string) $hash, sha1($user->getEmailForVerification()))) {
+        if (!hash_equals((string) $hash, sha1($user->getEmailForVerification()))) {
             return redirect(config('app.frontend_url') . '/email-verification/error?reason=invalid');
         }
 
-        if (! $request->hasValidSignature()) {
+        if (!$request->hasValidSignature()) {
             return redirect(config('app.frontend_url') . '/email-verification/error?reason=expired');
         }
 
-        if (! $user->hasVerifiedEmail()) {
+        if (!$user->hasVerifiedEmail()) {
             $user->markEmailAsVerified();
             event(new Verified($user));
         }
@@ -181,8 +181,10 @@ class AuthController extends Controller
 
     public function me(Request $request): JsonResponse
     {
+        $user = $request->user()->fresh();
+
         return response()->json([
-            'user' => $request->user(),
+            'user' => $user,
         ]);
     }
 
@@ -191,11 +193,47 @@ class AuthController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:255'],
             'base_currency' => ['required', 'string', 'max:10'],
+            'price_sync_enabled' => ['nullable', 'boolean'],
+            'price_sync_times' => ['nullable', 'array', 'max:2'],
+            'price_sync_times.*' => ['string', 'regex:/^\d{2}:\d{2}$/'],
         ]);
 
         $user = $request->user();
 
-        $user->update($data);
+        $priceSyncEnabled = (bool) ($data['price_sync_enabled'] ?? false);
+        $priceSyncTimes = $data['price_sync_times'] ?? [];
+
+        $priceSyncTimes = collect($priceSyncTimes)
+            ->filter(fn ($time) => !empty($time))
+            ->map(fn ($time) => trim($time))
+            ->unique()
+            ->values()
+            ->all();
+
+        if (count($priceSyncTimes) > 2) {
+            return $this->authResponse->error(
+                'Maksimal hanya 2 jam sinkronisasi.',
+                'You can only set up to 2 sync times.',
+                null,
+                422
+            );
+        }
+
+        if ($priceSyncEnabled && empty($priceSyncTimes)) {
+            return $this->authResponse->error(
+                'Pilih minimal 1 jam sinkronisasi.',
+                'Please select at least 1 sync time.',
+                null,
+                422
+            );
+        }
+
+        $user->update([
+            'name' => $data['name'],
+            'base_currency' => strtoupper($data['base_currency']),
+            'price_sync_enabled' => $priceSyncEnabled,
+            'price_sync_times' => $priceSyncEnabled ? $priceSyncTimes : [],
+        ]);
 
         return response()->json([
             'message' => [

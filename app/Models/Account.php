@@ -14,6 +14,10 @@ class Account extends Model
         'initial_balance',
     ];
 
+    protected $casts = [
+        'initial_balance' => 'decimal:2',
+    ];
+
     public function user()
     {
         return $this->belongsTo(User::class);
@@ -22,5 +26,10 @@ class Account extends Model
     public function trades()
     {
         return $this->hasMany(Trade::class);
+    }
+
+    public function portfolioPositions()
+    {
+        return $this->hasMany(PortfolioPosition::class);
     }
 }

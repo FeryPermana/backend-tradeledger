@@ -35,4 +35,17 @@ return [
         ],
     ],
 
+    'binance' => [
+        'base_url' => env('BINANCE_API_BASE_URL', 'https://api.binance.com'),
+    ],
+
+    'twelve_data' => [
+        'api_key' => env('TWELVE_DATA_API_KEY'),
+        'base_url' => env('TWELVE_DATA_BASE_URL', 'https://api.twelvedata.com'),
+    ],
+
+    'eodhd' => [
+        'api_key' => env('EODHD_API_KEY'),
+        'base_url' => env('EODHD_BASE_URL', 'https://eodhd.com/api'),
+    ],
 ];

@@ -22,6 +22,9 @@ class User extends Authenticatable implements MustVerifyEmail
         'premium_plan',
         'premium_started_at',
         'premium_expires_at',
+        'price_sync_enabled',
+        'price_sync_times',
+        'last_price_sync_at',
     ];
 
     protected $hidden = [
@@ -35,6 +38,9 @@ class User extends Authenticatable implements MustVerifyEmail
         'is_premium' => 'boolean',
         'premium_started_at' => 'datetime',
         'premium_expires_at' => 'datetime',
+        'price_sync_enabled' => 'boolean',
+        'price_sync_times' => 'array',
+        'last_price_sync_at' => 'datetime',
     ];
 
     public function payments(): HasMany
@@ -75,7 +81,7 @@ class User extends Authenticatable implements MustVerifyEmail
     public function isPremiumActive(): bool
     {
         return $this->is_premium
-            && ! is_null($this->premium_expires_at)
+            && !is_null($this->premium_expires_at)
             && now()->lt($this->premium_expires_at);
     }
 

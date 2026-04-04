@@ -6,7 +6,8 @@ class CurrencyConverterService
 {
     public function __construct(
         protected ExchangeRateService $exchangeRateService
-    ) {}
+    ) {
+    }
 
     public function convert(float $amount, string $from, string $to): float
     {
@@ -29,7 +30,7 @@ class CurrencyConverterService
         $rates = $data['rates'] ?? [];
 
         if ($from !== 'USD') {
-            if (! isset($rates[$from])) {
+            if (!isset($rates[$from])) {
                 return round($amount, 2);
             }
 
@@ -37,7 +38,7 @@ class CurrencyConverterService
         }
 
         if ($to !== 'USD') {
-            if (! isset($rates[$to])) {
+            if (!isset($rates[$to])) {
                 return round($amount, 2);
             }
 
