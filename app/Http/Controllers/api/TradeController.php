@@ -101,15 +101,15 @@ class TradeController extends Controller
             ->where('user_id', $request->user()->id)
             ->firstOrFail();
 
-        $requiredCash = ((float) $data['entry_price'] * (float) $data['quantity']) + (float) ($data['fees'] ?? 0);
+        // $requiredCash = ((float) $data['entry_price'] * (float) $data['quantity']) + (float) ($data['fees'] ?? 0);
 
-        if (! $this->accountBalanceService->hasEnoughBalance($account, $requiredCash)) {
-            return $this->apiResponse->error(
-                'Saldo tidak cukup.',
-                'Insufficient balance.',
-                422
-            );
-        }
+        // if (! $this->accountBalanceService->hasEnoughBalance($account, $requiredCash)) {
+        //     return $this->apiResponse->error(
+        //         'Saldo tidak cukup.',
+        //         'Insufficient balance.',
+        //         422
+        //     );
+        // }
 
         $data['closed_quantity'] = 0;
         $data['exit_price'] = null;
