@@ -142,6 +142,25 @@ class AnalyticsService
         return $query;
     }
 
+    protected function applyAccountFilters(Builder $query, array $filters = []): Builder
+    {
+        $accountIds = $this->toArrayValue($filters['account_id'] ?? null);
+        if (!empty($accountIds)) {
+            $query->whereIn('id', $accountIds);
+        }
+
+        $positionTypes = $this->toArrayValue($filters['position_type'] ?? null);
+        if (!empty($positionTypes)) {
+            if (count($positionTypes) === 1 && $positionTypes[0] === 'no_investment') {
+                $query->where('type', '!=', 'investment');
+            } else {
+                $query->whereIn('type', $positionTypes);
+            }
+        }
+
+        return $query;
+    }
+
     protected function normalizeTrades(Collection $trades, string $baseCurrency): Collection
     {
         return $trades->map(function (Trade $trade) use ($baseCurrency) {
@@ -243,6 +262,24 @@ class AnalyticsService
         ];
     }
 
+    protected function getTotalModalFromAccounts(int $userId, array $filters = []): float
+    {
+        $baseCurrency = $this->getBaseCurrency($userId);
+
+        $query = Account::query()
+            ->where('user_id', $userId);
+
+        $this->applyAccountFilters($query, $filters);
+
+        return (float) $query->get()->sum(function (Account $account) use ($baseCurrency) {
+            return $this->convertMoney(
+                (float) ($account->initial_balance ?? 0),
+                (string) ($account->currency ?? 'IDR'),
+                $baseCurrency
+            );
+        });
+    }
+
     public function getSummary(int $userId, array $filters = []): array
     {
         $baseCurrency = $this->getBaseCurrency($userId);
@@ -256,7 +293,17 @@ class AnalyticsService
 
         $normalizedTrades = $this->normalizeTrades($query->get(), $baseCurrency);
 
-        return $this->makePerformancePayload($normalizedTrades, $baseCurrency);
+        $payload = $this->makePerformancePayload($normalizedTrades, $baseCurrency);
+
+        $totalModal = $this->getTotalModalFromAccounts($userId, $filters);
+        $returnPercentage = $totalModal > 0
+            ? (($payload['net_profit'] / $totalModal) * 100)
+            : 0;
+
+        $payload['total_modal'] = round($totalModal, 2);
+        $payload['return_percentage'] = round($returnPercentage, 2);
+
+        return $payload;
     }
 
     public function getStrategyPerformance(int $userId, array $filters = []): array
