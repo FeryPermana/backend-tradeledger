@@ -127,28 +127,6 @@ class StoreTradeRequest extends FormRequest
             if (! $this->filled('account_id') || ! $this->filled('entry_price') || ! $this->filled('quantity')) {
                 return;
             }
-
-            $account = Account::query()
-                ->where('id', $this->account_id)
-                ->where('user_id', $this->user()->id)
-                ->first();
-
-            if (! $account) {
-                return;
-            }
-
-            $entryPrice = (float) $this->entry_price;
-            $fees = (float) ($this->fees ?? 0);
-
-            $positionValue = ($entryPrice * $quantity) + $fees;
-            $availableEquity = (float) $account->initial_balance;
-
-            if ($positionValue > $availableEquity) {
-                $validator->errors()->add(
-                    'quantity',
-                    'Position value exceeds account equity.'
-                );
-            }
         });
     }
 }

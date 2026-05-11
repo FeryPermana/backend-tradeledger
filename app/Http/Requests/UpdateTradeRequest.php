@@ -193,29 +193,6 @@ class UpdateTradeRequest extends FormRequest
             if (! $this->filled('account_id') || ! $this->filled('entry_price') || ! $this->filled('quantity')) {
                 return;
             }
-
-            $account = Account::query()
-                ->where('id', $this->account_id)
-                ->where('user_id', $this->user()->id)
-                ->first();
-
-            if (! $account) {
-                return;
-            }
-
-            if ($incrementClose <= 0 && empty($this->input('exit_date'))) {
-                $entryPrice = (float) $this->input('entry_price');
-                $fees = (float) ($this->input('fees') ?? 0);
-                $positionValue = ($entryPrice * $payloadQuantity) + $fees;
-                $availableEquity = (float) $account->initial_balance;
-
-                if ($positionValue > $availableEquity) {
-                    $validator->errors()->add(
-                        'quantity',
-                        'Position value exceeds account equity.'
-                    );
-                }
-            }
         });
     }
 }
