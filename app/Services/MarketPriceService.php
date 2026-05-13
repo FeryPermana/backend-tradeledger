@@ -19,6 +19,7 @@ class MarketPriceService
             'stock_us' => $this->getStockUsPrice($symbol),
             'stock_idx' => $this->getStockIdxPrice($symbol),
             'commodity' => null,
+            'money_market' => null,
             default => null,
         };
     }

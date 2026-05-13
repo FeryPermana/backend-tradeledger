@@ -17,7 +17,7 @@ class UpdateAssetRequest extends FormRequest
             'symbol' => ['required', 'string', 'max:20'],
             'name' => ['required', 'string', 'max:255'],
             'market' => ['required', 'string', 'max:50'],
-            'category' => ['required', 'in:crypto,stock_idx,stock_us,commodity'],
+            'category' => ['required', 'in:crypto,stock_idx,stock_us,commodity,money_market'],
             'is_watchlist' => ['nullable', 'boolean'],
             'tradingview_url' => ['nullable', 'url', 'max:500'],
         ];

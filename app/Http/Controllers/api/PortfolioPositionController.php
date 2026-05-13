@@ -150,14 +150,6 @@ class PortfolioPositionController extends Controller
     {
         abort_if($portfolioPosition->user_id !== $request->user()->id, 403);
 
-        if ($portfolioPosition->source_type === 'trade_sync') {
-            return $this->apiResponse->error(
-                'Posisi investment hasil sinkronisasi trade tidak bisa dihapus manual.',
-                'Trade synced investment position cannot be deleted manually.',
-                422
-            );
-        }
-
         $portfolioPosition->delete();
 
         return $this->apiResponse->success(
